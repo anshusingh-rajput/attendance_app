@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 import 'package:geolocator/geolocator.dart';
@@ -5,6 +6,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/attendance_summary.dart';
 import 'auth_service.dart';
+import 'geofence_service.dart';
+import 'gps_tracking_service.dart';
 
 enum PunchDirection {
   checkIn(1),
@@ -49,6 +52,21 @@ class AttendanceService {
       return PunchResult.failure(loc.error!);
     }
 
+    final pos = loc.position!;
+    await GeofenceService.instance.getFences(forceRefresh: true);
+    final isInside = await GeofenceService.instance
+        .isInsideAnyFence(pos.latitude, pos.longitude);
+    if (!isInside) {
+      final nearest = await GeofenceService.instance
+          .nearestFenceInfo(pos.latitude, pos.longitude);
+      final detail = nearest != null
+          ? '${nearest.distance.toStringAsFixed(0)}m from "${nearest.name}"'
+          : 'outside allowed area';
+      return PunchResult.failure(
+        'You are outside the geofence ($detail). Cannot punch.',
+      );
+    }
+
     final token = await AuthService().getToken();
     if (token == null || token.isEmpty) {
       return PunchResult.failure('Not authenticated');
@@ -60,12 +78,12 @@ class AttendanceService {
       final request = http.MultipartRequest('POST', uri);
       request.headers['Authorization'] = 'Bearer $token';
       request.headers['Accept'] = 'application/json';
-      request.fields['Latitude'] = loc.position!.latitude.toString();
-      request.fields['Longitude'] = loc.position!.longitude.toString();
+      request.fields['Latitude'] = pos.latitude.toString();
+      request.fields['Longitude'] = pos.longitude.toString();
       request.fields['Direction'] = direction.value.toString();
-      request.fields['AccuracyMeters'] = loc.position!.accuracy.toString();
+      request.fields['AccuracyMeters'] = pos.accuracy.toString();
       request.fields['DeviceTimestamp'] =
-          DateTime.now().toUtc().toIso8601String();
+          '${DateTime.now().toIso8601String()}Z';
       request.fields['DeviceId'] = deviceId;
 
       final streamed =
@@ -73,6 +91,11 @@ class AttendanceService {
       final response = await http.Response.fromStream(streamed);
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
+        if (direction == PunchDirection.checkIn) {
+          unawaited(GpsTrackingService.instance.startTracking());
+        } else {
+          unawaited(GpsTrackingService.instance.stopTracking());
+        }
         return PunchResult.success(rawBody: response.body);
       }
       final reason = _extractReason(response.body) ??

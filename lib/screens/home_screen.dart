@@ -40,7 +40,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _DashboardTab(user: _user, onRefreshUser: _loadMe),
       const HistoryScreen(),
       const LeavesScreen(),
-      ProfileScreen(user: _user),
+      ProfileScreen(user: _user, onRefreshUser: _loadMe),
     ];
 
     return Scaffold(

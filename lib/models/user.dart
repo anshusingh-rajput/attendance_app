@@ -3,6 +3,7 @@ class User {
   final String? employeeCode;
   final String displayName;
   final String? email;
+  final String? mobileNo;
   final String? departmentName;
   final String? presenceState;
   final bool gpsTrackingActive;
@@ -17,6 +18,7 @@ class User {
     this.employeeCode,
     required this.displayName,
     this.email,
+    this.mobileNo,
     this.departmentName,
     this.presenceState,
     this.gpsTrackingActive = false,
@@ -37,6 +39,7 @@ class User {
       employeeCode: json['employeeCode'] as String?,
       displayName: (json['displayName'] as String?) ?? '',
       email: json['email'] as String?,
+      mobileNo: json['mobileNo'] as String?,
       departmentName: json['departmentName'] as String?,
       presenceState: json['presenceState'] as String?,
       gpsTrackingActive: (json['gpsTrackingActive'] as bool?) ?? false,

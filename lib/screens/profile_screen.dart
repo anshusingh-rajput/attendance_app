@@ -3,12 +3,14 @@ import '../theme/app_theme.dart';
 import '../data/mock_data.dart';
 import '../models/user.dart';
 import '../services/auth_service.dart';
+import '../services/mobile_service.dart';
 import 'payslips_screen.dart';
 import 'login_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   final User? user;
-  const ProfileScreen({super.key, this.user});
+  final Future<void> Function()? onRefreshUser;
+  const ProfileScreen({super.key, this.user, this.onRefreshUser});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
@@ -70,20 +72,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
             (parts.isNotEmpty ? parts.first : '');
         final initialLast = _lastNameOverride ??
             (parts.length > 1 ? parts.sublist(1).join(' ') : '');
+        final initialPhone = widget.user?.mobileNo ?? _phone;
         return _EditProfileSheet(
           firstName: initialFirst,
           lastName: initialLast,
           email: _email,
-          phone: _phone,
-          onSave: (f, l, p) {
-            setState(() {
-              _firstNameOverride = f;
-              _lastNameOverride = l;
-              _phoneOverride = p;
-            });
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Profile updated')),
+          phone: initialPhone,
+          onSave: (f, l, p) async {
+            final result = await MobileService().updateMe(
+              firstName: f,
+              lastName: l,
+              mobileNo: p,
+              displayName: '$f $l'.trim(),
             );
+            if (!mounted) return result.error;
+            if (result.isSuccess) {
+              setState(() {
+                _firstNameOverride = f;
+                _lastNameOverride = l;
+                _phoneOverride = p;
+              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Profile updated')),
+              );
+              await widget.onRefreshUser?.call();
+            }
+            return result.error;
           },
         );
       },
@@ -450,7 +464,8 @@ class _EditProfileSheet extends StatefulWidget {
   final String lastName;
   final String email;
   final String phone;
-  final void Function(String firstName, String lastName, String phone) onSave;
+  final Future<String?> Function(String firstName, String lastName, String phone)
+      onSave;
 
   const _EditProfileSheet({
     required this.firstName,
@@ -469,6 +484,7 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
   late final TextEditingController _lastNameCtrl;
   late final TextEditingController _emailCtrl;
   late final TextEditingController _phoneCtrl;
+  bool _saving = false;
 
   @override
   void initState() {
@@ -543,14 +559,25 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
             SizedBox(
               height: 52,
               child: ElevatedButton(
-                onPressed: () {
-                  widget.onSave(
-                    _firstNameCtrl.text.trim(),
-                    _lastNameCtrl.text.trim(),
-                    _phoneCtrl.text.trim(),
-                  );
-                  Navigator.pop(context);
-                },
+                onPressed: _saving
+                    ? null
+                    : () async {
+                        setState(() => _saving = true);
+                        final error = await widget.onSave(
+                          _firstNameCtrl.text.trim(),
+                          _lastNameCtrl.text.trim(),
+                          _phoneCtrl.text.trim(),
+                        );
+                        if (!mounted) return;
+                        if (error == null) {
+                          Navigator.pop(context);
+                        } else {
+                          setState(() => _saving = false);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text(error)),
+                          );
+                        }
+                      },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primaryBlue,
                   foregroundColor: Colors.white,
@@ -559,13 +586,22 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
                     borderRadius: BorderRadius.circular(12),
                   ),
                 ),
-                child: const Text(
-                  'Save Changes',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+                child: _saving
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text(
+                        'Save Changes',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
               ),
             ),
           ],
