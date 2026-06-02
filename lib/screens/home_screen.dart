@@ -5,6 +5,7 @@ import '../data/mock_data.dart';
 import '../models/user.dart';
 import '../services/attendance_service.dart';
 import '../services/mobile_service.dart';
+import 'checkin_camera_screen.dart';
 import 'history_screen.dart';
 import 'leaves_screen.dart';
 import 'profile_screen.dart';
@@ -338,18 +339,17 @@ class _DashboardTabState extends State<_DashboardTab> {
     setState(() => _isPunching = true);
     final direction =
         _isCheckedIn ? PunchDirection.checkOut : PunchDirection.checkIn;
-    final result = await _attendance.punch(direction: direction);
+
+    final captured = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => CheckInCameraScreen(direction: direction),
+      ),
+    );
 
     if (!mounted) return;
     setState(() => _isPunching = false);
 
-    if (!result.isSuccess) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(result.error ?? 'Punch failed'),
-          duration: const Duration(seconds: 3),
-        ),
-      );
+    if (captured != true) {
       return;
     }
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
@@ -46,7 +47,12 @@ class AttendanceService {
   static const String _baseUrl = 'https://bhsmart.satoop.com';
   static const String _deviceIdKey = 'device_id';
 
-  Future<PunchResult> punch({required PunchDirection direction}) async {
+  Future<PunchResult> punch({
+    required PunchDirection direction,
+    File? selfie,
+    bool? faceMatchStatus,
+    double? faceMatchScore,
+  }) async {
     final loc = await _getLocation();
     if (loc.error != null) {
       return PunchResult.failure(loc.error!);
@@ -85,6 +91,18 @@ class AttendanceService {
       request.fields['DeviceTimestamp'] =
           '${DateTime.now().toIso8601String()}Z';
       request.fields['DeviceId'] = deviceId;
+
+      if (faceMatchStatus != null) {
+        request.fields['FaceMatchStatus'] = faceMatchStatus.toString();
+      }
+      if (faceMatchScore != null) {
+        request.fields['FaceMatchScore'] = faceMatchScore.toString();
+      }
+      if (selfie != null) {
+        request.files.add(
+          await http.MultipartFile.fromPath('selfie', selfie.path),
+        );
+      }
 
       final streamed =
           await request.send().timeout(const Duration(seconds: 30));

@@ -6,6 +6,7 @@ class AuthService {
   static const String _baseUrl = 'https://bhsmart.satoop.com';
   static const String _tokenKey = 'auth_token';
   static const String _usernameKey = 'auth_username';
+  static const String _profilePhotoUrlKey = 'auth_profile_photo_url';
 
   Future<LoginResult> login({
     required String username,
@@ -32,7 +33,8 @@ class AuthService {
         if (token == null || token.isEmpty) {
           return LoginResult.failure('Token not found in response');
         }
-        await _saveToken(token, username);
+        final photoUrl = _extractProfilePhotoUrl(data);
+        await _saveToken(token, username, photoUrl);
         return LoginResult.success(token);
       }
 
@@ -68,10 +70,33 @@ class AuthService {
     return null;
   }
 
-  Future<void> _saveToken(String token, String username) async {
+  Future<void> _saveToken(
+    String token,
+    String username,
+    String? profilePhotoUrl,
+  ) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_tokenKey, token);
     await prefs.setString(_usernameKey, username);
+    if (profilePhotoUrl != null && profilePhotoUrl.isNotEmpty) {
+      await prefs.setString(_profilePhotoUrlKey, profilePhotoUrl);
+    }
+  }
+
+  String? _extractProfilePhotoUrl(dynamic data) {
+    if (data is! Map<String, dynamic>) return null;
+    for (final key in ['profilePhotoUrl', 'profilePhotoURL', 'profilePhoto']) {
+      final v = data[key];
+      if (v is String && v.isNotEmpty) return v;
+    }
+    final inner = data['data'];
+    if (inner is Map<String, dynamic>) return _extractProfilePhotoUrl(inner);
+    return null;
+  }
+
+  Future<String?> getProfilePhotoUrl() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_profilePhotoUrlKey);
   }
 
   Future<LoginResult> refreshToken() async {
@@ -124,6 +149,7 @@ class AuthService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
     await prefs.remove(_usernameKey);
+    await prefs.remove(_profilePhotoUrlKey);
   }
 }
 

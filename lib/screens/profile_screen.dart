@@ -258,17 +258,12 @@ class _ProfileAvatar extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.primaryBlue.withValues(alpha: 0.12),
         shape: BoxShape.circle,
-        image: hasPhoto
-            ? DecorationImage(
-                image: NetworkImage(photoUrl!),
-                fit: BoxFit.cover,
-              )
-            : null,
       ),
-      alignment: Alignment.center,
-      child: hasPhoto
-          ? null
-          : Text(
+      child: ClipOval(
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Text(
               initials,
               style: const TextStyle(
                 fontSize: 36,
@@ -276,6 +271,17 @@ class _ProfileAvatar extends StatelessWidget {
                 color: AppColors.primaryBlue,
               ),
             ),
+            if (hasPhoto)
+              Image.network(
+                photoUrl!,
+                fit: BoxFit.cover,
+                width: 110,
+                height: 110,
+                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+              ),
+          ],
+        ),
+      ),
     );
   }
 }
