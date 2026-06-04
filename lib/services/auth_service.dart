@@ -166,6 +166,20 @@ class AuthService {
   }
 
   Future<void> logout() async {
+    final token = await getToken();
+    if (token != null && token.isNotEmpty) {
+      try {
+        await http
+            .post(
+              Uri.parse('$_baseUrl/api/auth/logout'),
+              headers: {
+                'Authorization': 'Bearer $token',
+                'Accept': 'application/json',
+              },
+            )
+            .timeout(const Duration(seconds: 10));
+      } catch (_) {}
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
     await prefs.remove(_usernameKey);
