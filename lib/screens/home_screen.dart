@@ -340,16 +340,35 @@ class _DashboardTabState extends State<_DashboardTab> {
     final direction =
         _isCheckedIn ? PunchDirection.checkOut : PunchDirection.checkIn;
 
-    final captured = await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (_) => CheckInCameraScreen(direction: direction),
-      ),
-    );
+    bool success = false;
 
-    if (!mounted) return;
+    if (direction == PunchDirection.checkIn) {
+      final captured = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => CheckInCameraScreen(direction: direction),
+        ),
+      );
+      if (!mounted) return;
+      success = captured == true;
+    } else {
+      final result = await _attendance.punch(direction: direction);
+      if (!mounted) return;
+      if (!result.isSuccess) {
+        setState(() => _isPunching = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.error ?? 'Check-out failed'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+      success = true;
+    }
+
     setState(() => _isPunching = false);
 
-    if (captured != true) {
+    if (!success) {
       return;
     }
 

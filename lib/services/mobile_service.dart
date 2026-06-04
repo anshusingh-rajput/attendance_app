@@ -91,7 +91,12 @@ class MobileService {
       if (response.statusCode >= 200 && response.statusCode < 300) {
         final data = jsonDecode(response.body);
         if (data is Map<String, dynamic>) {
-          return UpdateMeResult.success(User.fromJson(data));
+          final user = User.fromJson(data);
+          if (user.profilePhotoUrl != null &&
+              user.profilePhotoUrl!.isNotEmpty) {
+            await AuthService().setProfilePhotoUrl(user.profilePhotoUrl!);
+          }
+          return UpdateMeResult.success(user);
         }
         return UpdateMeResult.failure('Invalid response');
       }

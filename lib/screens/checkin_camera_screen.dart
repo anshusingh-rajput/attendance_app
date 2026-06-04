@@ -3,6 +3,9 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import '../services/attendance_service.dart';
+import '../services/auth_service.dart';
+import '../services/face_match_service.dart';
+import '../services/mobile_service.dart';
 import '../theme/app_theme.dart';
 
 class CheckInCameraScreen extends StatefulWidget {
@@ -121,6 +124,43 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
       final XFile shot = await controller.takePicture();
       final photoFile = File(shot.path);
 
+      bool faceMatched = true;
+      double faceScore = 1.0;
+
+      final referenceUrl = await AuthService().getProfilePhotoUrl();
+
+      if (referenceUrl == null || referenceUrl.isEmpty) {
+        setState(() => _statusText = 'Saving your photo...');
+        final updateResult =
+            await MobileService().updateMe(profilePhoto: photoFile);
+        if (!mounted) return;
+        if (!updateResult.isSuccess) {
+          _showError(updateResult.error ?? 'Photo upload failed');
+          return;
+        }
+      } else {
+        setState(() => _statusText = 'Verifying face...');
+        final matchResult = await FaceMatchService.instance.compareWithUrl(
+          selfie: photoFile,
+          referenceUrl: referenceUrl,
+        );
+        if (!mounted) return;
+
+        if (!matchResult.isSuccess) {
+          _showError(matchResult.error ?? 'Face verification failed');
+          return;
+        }
+
+        const double clientThreshold = 0.50;
+        final sim = matchResult.similarity ?? 0;
+        if (sim < clientThreshold) {
+          await _showFaceMismatchDialog(sim);
+          return;
+        }
+        faceMatched = true;
+        faceScore = sim;
+      }
+
       setState(() => _statusText =
           widget.direction == PunchDirection.checkIn
               ? 'Checking in...'
@@ -128,8 +168,8 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
       final punchResult = await AttendanceService().punch(
         direction: widget.direction,
         selfie: photoFile,
-        faceMatchStatus: true,
-        faceMatchScore: 1.0,
+        faceMatchStatus: faceMatched,
+        faceMatchScore: faceScore,
       );
       if (!mounted) return;
       if (!punchResult.isSuccess) {
@@ -142,6 +182,62 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
       if (!mounted) return;
       _showError('Capture failed: $e');
     }
+  }
+
+  Future<void> _showFaceMismatchDialog(double similarity) async {
+    setState(() {
+      _busy = false;
+      _statusText = '';
+    });
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        icon: const Icon(
+          Icons.face_retouching_off,
+          color: Colors.redAccent,
+          size: 56,
+        ),
+        title: const Text(
+          'Face Not Matched',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          'Your face does not match the registered photo '
+          '(${(similarity * 100).toStringAsFixed(0)}% similarity).\n\n'
+          'Please try again with proper lighting or contact admin.',
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 14,
+            color: AppColors.subtitleGrey,
+          ),
+        ),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryBlue,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              child: const Text(
+                'Try Again',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showError(String msg) {

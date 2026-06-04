@@ -96,7 +96,27 @@ class AuthService {
 
   Future<String?> getProfilePhotoUrl() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getString(_profilePhotoUrlKey);
+    final raw = prefs.getString(_profilePhotoUrlKey);
+    return _normalizeUrl(raw);
+  }
+
+  Future<void> setProfilePhotoUrl(String url) async {
+    if (url.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_profilePhotoUrlKey, url);
+  }
+
+  String? _normalizeUrl(String? url) {
+    if (url == null) return null;
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return null;
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+      return trimmed;
+    }
+    if (trimmed.startsWith('/')) {
+      return '$_baseUrl$trimmed';
+    }
+    return '$_baseUrl/$trimmed';
   }
 
   Future<LoginResult> refreshToken() async {
