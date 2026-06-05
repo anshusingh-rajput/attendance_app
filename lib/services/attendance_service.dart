@@ -5,7 +5,7 @@ import 'dart:math';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
-import '../models/attendance_summary.dart';
+import '../models/attendance_day.dart';
 import 'auth_service.dart';
 import 'geofence_service.dart';
 import 'gps_tracking_service.dart';
@@ -238,7 +238,7 @@ class AttendanceService {
     }
   }
 
-  Future<AttendanceSummary?> fetchSummary({
+  Future<List<AttendanceDay>?> fetchSummary({
     required DateTime from,
     required DateTime to,
   }) async {
@@ -262,8 +262,11 @@ class AttendanceService {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        if (data is Map<String, dynamic>) {
-          return AttendanceSummary.fromJson(data);
+        if (data is List) {
+          return data
+              .whereType<Map<String, dynamic>>()
+              .map(AttendanceDay.fromJson)
+              .toList();
         }
       }
       return null;

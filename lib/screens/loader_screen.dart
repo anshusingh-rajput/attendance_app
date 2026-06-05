@@ -3,6 +3,7 @@ import '../theme/app_theme.dart';
 import '../widgets/app_logo.dart';
 import '../services/auth_service.dart';
 import 'home_screen.dart';
+import 'registration_selfie_screen.dart';
 
 class LoaderScreen extends StatefulWidget {
   final String username;
@@ -36,9 +37,14 @@ class _LoaderScreenState extends State<LoaderScreen> {
     if (!mounted) return;
 
     if (result.isSuccess) {
+      final photoUrl = await _auth.getProfilePhotoUrl();
+      if (!mounted) return;
+      final needsSetup = photoUrl == null || photoUrl.isEmpty;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
-          builder: (_) => HomeScreen(token: result.token!),
+          builder: (_) => needsSetup
+              ? RegistrationSelfieScreen(token: result.token!)
+              : HomeScreen(token: result.token!),
         ),
       );
     } else {

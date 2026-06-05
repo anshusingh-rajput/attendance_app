@@ -165,6 +165,60 @@ class AuthService {
     return prefs.getString(_usernameKey);
   }
 
+  Future<SimpleResult> requestForgotPassword(String username) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/api/auth/forgot-password'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({'username': username}),
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return SimpleResult.success();
+      }
+      final reason = _extractError(response.body) ??
+          'Request failed (${response.statusCode})';
+      return SimpleResult.failure(reason);
+    } catch (e) {
+      return SimpleResult.failure('Network error: ${e.toString()}');
+    }
+  }
+
+  Future<SimpleResult> resetPassword({
+    required String token,
+    required String newPassword,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/api/auth/reset-password'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({
+              'token': token,
+              'newPassword': newPassword,
+            }),
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return SimpleResult.success();
+      }
+      final reason = _extractError(response.body) ??
+          'Reset failed (${response.statusCode})';
+      return SimpleResult.failure(reason);
+    } catch (e) {
+      return SimpleResult.failure('Network error: ${e.toString()}');
+    }
+  }
+
   Future<void> logout() async {
     final token = await getToken();
     if (token != null && token.isNotEmpty) {
@@ -198,4 +252,15 @@ class LoginResult {
       LoginResult._(isSuccess: true, token: token);
   factory LoginResult.failure(String error) =>
       LoginResult._(isSuccess: false, error: error);
+}
+
+class SimpleResult {
+  final bool isSuccess;
+  final String? error;
+
+  const SimpleResult._({required this.isSuccess, this.error});
+
+  factory SimpleResult.success() => const SimpleResult._(isSuccess: true);
+  factory SimpleResult.failure(String error) =>
+      SimpleResult._(isSuccess: false, error: error);
 }

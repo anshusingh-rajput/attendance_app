@@ -25,6 +25,7 @@ class GpsTrackingService {
 
   String? _deviceId;
   bool _isOutside = false;
+  DateTime? _lastEventSentAt;
 
   bool get isTracking => _isTracking;
 
@@ -42,16 +43,30 @@ class GpsTrackingService {
 
     _isTracking = true;
     _isOutside = false;
+    _lastEventSentAt = null;
     _deviceId = await _getOrCreateDeviceId();
     await NotificationService.instance.init();
     unawaited(GeofenceService.instance.getFences(forceRefresh: true));
 
-    _positionStream = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: _distanceFilterMeters,
+    final settings = AndroidSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: _distanceFilterMeters,
+      forceLocationManager: false,
+      intervalDuration: const Duration(seconds: 30),
+      foregroundNotificationConfig: const ForegroundNotificationConfig(
+        notificationTitle: 'Attendance tracking active',
+        notificationText:
+            'Your location is being recorded for attendance accuracy.',
+        notificationIcon:
+            AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
+        enableWakeLock: true,
+        setOngoing: true,
       ),
-    ).listen(_onPosition, onError: (_) {});
+    );
+
+    _positionStream =
+        Geolocator.getPositionStream(locationSettings: settings)
+            .listen(_onPosition, onError: (_) {});
 
     _periodicTimer =
         Timer.periodic(_periodicInterval, (_) => _sendPeriodicEvent());
@@ -69,11 +84,22 @@ class GpsTrackingService {
     _periodicTimer = null;
 
     _isOutside = false;
+    _lastEventSentAt = null;
     await NotificationService.instance.cancelBreachNotification();
   }
 
   void _onPosition(Position pos) {
     unawaited(_checkBreach(pos));
+    _maybeSendThrottledEvent(pos);
+  }
+
+  void _maybeSendThrottledEvent(Position pos) {
+    final now = DateTime.now();
+    if (_lastEventSentAt == null ||
+        now.difference(_lastEventSentAt!) >= _periodicInterval) {
+      _lastEventSentAt = now;
+      unawaited(_postEvent(pos));
+    }
   }
 
   Future<void> _checkBreach(Position pos) async {
@@ -105,7 +131,9 @@ class GpsTrackingService {
           timeLimit: Duration(seconds: 15),
         ),
       );
+      _lastEventSentAt = DateTime.now();
       await _postEvent(pos);
+      await _checkBreach(pos);
     } catch (_) {}
   }
 

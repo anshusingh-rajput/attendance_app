@@ -4,7 +4,7 @@ import '../data/mock_data.dart';
 import '../models/user.dart';
 import '../services/auth_service.dart';
 import '../services/mobile_service.dart';
-import 'payslips_screen.dart';
+import 'forgot_password_screen.dart';
 import 'login_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -32,7 +32,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String get _employeeCode =>
       widget.user?.employeeCode ?? MockUser.employeeId;
 
-  String get _email => widget.user?.email ?? MockUser.email;
+  String? get _email {
+    final e = widget.user?.email?.trim();
+    if (e == null || e.isEmpty) return null;
+    return e;
+  }
 
   String get _phone => _phoneOverride ?? MockUser.phone;
 
@@ -76,7 +80,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         return _EditProfileSheet(
           firstName: initialFirst,
           lastName: initialLast,
-          email: _email,
+          email: _email ?? '',
           phone: initialPhone,
           onSave: (f, l, p) async {
             final result = await MobileService().updateMe(
@@ -104,9 +108,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  void _comingSoon(String label) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$label coming soon')),
+  Future<void> _openChangePassword() async {
+    final username = await _auth.getUsername();
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ForgotPasswordScreen(
+          prefillUsername: username,
+          isChangePassword: true,
+        ),
+      ),
     );
   }
 
@@ -197,25 +208,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       label: 'Employee ID',
                       value: _employeeCode,
                     ),
-                    _InfoRow(
-                      icon: Icons.mail_outline_rounded,
-                      label: 'Email',
-                      value: _email,
-                    ),
+                    if (_email != null)
+                      _InfoRow(
+                        icon: Icons.mail_outline_rounded,
+                        label: 'Email',
+                        value: _email!,
+                      ),
                   ],
                 ),
                 const SizedBox(height: 18),
                 _ActionList(
                   items: [
-                    _ActionItem(
-                      icon: Icons.receipt_long_outlined,
-                      label: 'Payslips',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => const PayslipsScreen(),
-                        ),
-                      ),
-                    ),
                     _ActionItem(
                       icon: Icons.edit_outlined,
                       label: 'Edit Profile',
@@ -224,7 +227,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     _ActionItem(
                       icon: Icons.lock_outline_rounded,
                       label: 'Change Password',
-                      onTap: () => _comingSoon('Change Password'),
+                      onTap: _openChangePassword,
                     ),
                     _ActionItem(
                       icon: Icons.logout_rounded,

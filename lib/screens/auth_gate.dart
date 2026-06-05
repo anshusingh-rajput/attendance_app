@@ -4,6 +4,7 @@ import '../widgets/app_logo.dart';
 import '../services/auth_service.dart';
 import 'home_screen.dart';
 import 'login_screen.dart';
+import 'registration_selfie_screen.dart';
 
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
@@ -34,8 +35,15 @@ class _AuthGateState extends State<AuthGate> {
     if (!mounted) return;
 
     if (result.isSuccess) {
+      final photoUrl = await _auth.getProfilePhotoUrl();
+      if (!mounted) return;
+      final needsSetup = photoUrl == null || photoUrl.isEmpty;
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => HomeScreen(token: result.token!)),
+        MaterialPageRoute(
+          builder: (_) => needsSetup
+              ? RegistrationSelfieScreen(token: result.token!)
+              : HomeScreen(token: result.token!),
+        ),
       );
     } else {
       await _auth.logout();

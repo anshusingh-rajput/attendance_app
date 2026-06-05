@@ -96,6 +96,41 @@ class _DashboardTabState extends State<_DashboardTab> {
   void initState() {
     super.initState();
     _syncFromUser();
+    _loadTodayRecord();
+  }
+
+  Future<void> _loadTodayRecord() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final records =
+        await _attendance.fetchSummary(from: today, to: today);
+    if (!mounted || records == null || records.isEmpty) return;
+    final rec = records.first;
+
+    setState(() {
+      if (rec.firstInAt != null) {
+        _lastCheckIn = rec.firstInAt;
+      }
+      if (rec.lastOutAt != null) {
+        _lastCheckOut = rec.lastOutAt;
+      }
+      // If firstInAt exists but no lastOutAt → user hasn't checked out yet.
+      // Restore the checked-in state so they can complete check-out (button
+      // shows "Check Out"). Ignore presenceState here — backend may have
+      // already flagged "MissingOut", but the user should still be allowed
+      // to check out as long as no check-out has been recorded.
+      if (rec.firstInAt != null && rec.lastOutAt == null) {
+        _checkInAt = rec.firstInAt;
+        _elapsed = DateTime.now().difference(rec.firstInAt!);
+        _ticker?.cancel();
+        _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+          if (!mounted || _checkInAt == null) return;
+          setState(() {
+            _elapsed = DateTime.now().difference(_checkInAt!);
+          });
+        });
+      }
+    });
   }
 
   @override
@@ -211,17 +246,6 @@ class _DashboardTabState extends State<_DashboardTab> {
                 _markDay(kind: _DayMarkKind.leave);
               },
             ),
-            _DayMarkOption(
-              icon: Icons.restart_alt_rounded,
-              iconColor: const Color(0xFFEF4444),
-              iconBg: const Color(0xFFFEE2E2),
-              label: "Clear today's mark",
-              subtitle: 'Re-enables check-in/out',
-              onTap: () {
-                Navigator.pop(ctx);
-                _clearDayMark();
-              },
-            ),
             const SizedBox(height: 12),
           ],
         ),
@@ -333,12 +357,170 @@ class _DashboardTabState extends State<_DashboardTab> {
     }
   }
 
+  Future<void> _showPunchError(String msg) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        icon: Container(
+          width: 64,
+          height: 64,
+          decoration: const BoxDecoration(
+            color: Color(0xFFFEE2E2),
+            shape: BoxShape.circle,
+          ),
+          alignment: Alignment.center,
+          child: const Icon(
+            Icons.error_outline_rounded,
+            color: Color(0xFFEF4444),
+            size: 36,
+          ),
+        ),
+        title: const Text(
+          'Unable to Punch',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+            color: AppColors.darkText,
+          ),
+        ),
+        content: Text(
+          msg,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 14,
+            color: AppColors.subtitleGrey,
+            height: 1.4,
+          ),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primaryBlue,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: const Text(
+                'OK',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<bool?> _confirmPunch({required bool isCheckIn}) {
+    final action = isCheckIn ? 'Check In' : 'Check Out';
+    final desc = isCheckIn
+        ? 'You will start your workday. A selfie and location will be captured.'
+        : 'You will end your workday. Are you sure?';
+    final actionColor =
+        isCheckIn ? AppColors.primaryBlue : const Color(0xFFEF4444);
+
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        icon: Icon(
+          isCheckIn ? Icons.login_rounded : Icons.logout_rounded,
+          color: actionColor,
+          size: 44,
+        ),
+        title: Text(
+          'Confirm $action',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          desc,
+          textAlign: TextAlign.center,
+          style: const TextStyle(
+            fontSize: 14,
+            color: AppColors.subtitleGrey,
+          ),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        actions: [
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    side: const BorderSide(color: AppColors.borderGrey),
+                  ),
+                  child: const Text(
+                    'Cancel',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.darkText,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: actionColor,
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  child: Text(
+                    action,
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _onCheckInTap() async {
     if (_isPunching) return;
 
-    setState(() => _isPunching = true);
     final direction =
         _isCheckedIn ? PunchDirection.checkOut : PunchDirection.checkIn;
+    final isCheckIn = direction == PunchDirection.checkIn;
+
+    final confirmed = await _confirmPunch(isCheckIn: isCheckIn);
+    if (confirmed != true) return;
+
+    setState(() => _isPunching = true);
 
     bool success = false;
 
@@ -355,12 +537,7 @@ class _DashboardTabState extends State<_DashboardTab> {
       if (!mounted) return;
       if (!result.isSuccess) {
         setState(() => _isPunching = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(result.error ?? 'Check-out failed'),
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        await _showPunchError(result.error ?? 'Check-out failed');
         return;
       }
       success = true;

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
-import '../data/mock_data.dart';
-import '../models/attendance_summary.dart' as model;
+import '../models/attendance_day.dart';
 import '../services/attendance_service.dart';
 
 class HistoryScreen extends StatefulWidget {
@@ -13,7 +12,7 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   final _attendance = AttendanceService();
-  model.AttendanceSummary? _summary;
+  List<AttendanceDay>? _days;
   bool _loading = true;
 
   @override
@@ -30,12 +29,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
     final result = await _attendance.fetchSummary(from: from, to: to);
     if (!mounted) return;
     setState(() {
-      _summary = result;
+      _days = result;
       _loading = false;
     });
   }
 
-  String _fmtTime(TimeOfDay? t) {
+  String _fmtTime(DateTime? t) {
     if (t == null) return '—';
     final h = t.hour;
     final m = t.minute.toString().padLeft(2, '0');
@@ -44,8 +43,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return '${hh.toString().padLeft(2, '0')}:$m $period';
   }
 
-  String _fmtDuration(Duration? d) {
-    if (d == null) return '—';
+  String _fmtDuration(Duration d) {
+    if (d.inMinutes == 0) return '—';
     final h = d.inHours;
     final m = d.inMinutes.remainder(60);
     if (h == 0) return '${m}m';
@@ -74,18 +73,52 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return '${months[d.month - 1]} ${d.year}';
   }
 
+  ({Color bg, Color fg, String label}) _statusStyle(AttendanceDay day) {
+    final status = day.status;
+    final s = status.toLowerCase();
+
+    // If this is today and user has checked in but not checked out,
+    // override the badge to "In Progress" — they still have time to check out.
+    final now = DateTime.now();
+    final isToday = day.date.year == now.year &&
+        day.date.month == now.month &&
+        day.date.day == now.day;
+    final stillIn = day.firstInAt != null && day.lastOutAt == null;
+    if (isToday && stillIn) {
+      return (
+        bg: const Color(0xFFDBEAFE),
+        fg: const Color(0xFF1E40AF),
+        label: 'In Progress',
+      );
+    }
+
+    if (day.isPresent || s == 'present') {
+      return (bg: const Color(0xFFD1FAE5), fg: const Color(0xFF065F46), label: 'Present');
+    }
+    if (s.contains('absent')) {
+      return (bg: const Color(0xFFFEE2E2), fg: const Color(0xFF991B1B), label: 'Absent');
+    }
+    if (s.contains('leave')) {
+      return (bg: const Color(0xFFDBEAFE), fg: const Color(0xFF1E40AF), label: 'Leave');
+    }
+    if (s == 'missingout' || s.contains('missing')) {
+      return (bg: const Color(0xFFFEF3C7), fg: const Color(0xFF92400E), label: 'Missing Out');
+    }
+    if (s == 'timeshortage' || s.contains('shortage')) {
+      return (bg: const Color(0xFFFEF3C7), fg: const Color(0xFF92400E), label: 'Time Shortage');
+    }
+    if (s == 'incomplete') {
+      return (bg: const Color(0xFFE5E7EB), fg: const Color(0xFF374151), label: 'Incomplete');
+    }
+    return (bg: const Color(0xFFE5E7EB), fg: const Color(0xFF374151), label: status);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final entries = mockAttendance;
     final now = DateTime.now();
     final monthLabel = _fmtMonthYear(now);
-
-    final int daysPresent =
-        _summary?.present ?? mockAttendanceSummary.daysPresent;
-    final Duration totalHours =
-        _summary?.totalHours ?? mockAttendanceSummary.totalHours;
-    final int thisMonth = _summary?.totalDays ??
-        mockAttendanceSummary.totalDaysInMonth;
+    final days = _days ?? const <AttendanceDay>[];
+    final totals = AttendanceTotals.fromDays(days);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -153,21 +186,21 @@ class _HistoryScreenState extends State<HistoryScreen> {
                           children: [
                             Expanded(
                               child: _Stat(
-                                value: '$daysPresent',
+                                value: '${totals.present}',
                                 label: 'Days Present',
                                 color: const Color(0xFF10B981),
                               ),
                             ),
                             Expanded(
                               child: _Stat(
-                                value: _fmtTotalHours(totalHours),
+                                value: _fmtTotalHours(totals.totalHours),
                                 label: 'Total Hours',
                                 color: AppColors.primaryBlue,
                               ),
                             ),
                             Expanded(
                               child: _Stat(
-                                value: '$thisMonth days',
+                                value: '${totals.totalDays} days',
                                 label: 'This Month',
                                 color: const Color(0xFFF59E0B),
                               ),
@@ -177,30 +210,49 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       ],
                     ),
                   ),
-                const SizedBox(height: 22),
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Text(
-                    monthLabel,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      color: AppColors.subtitleGrey,
-                      fontWeight: FontWeight.w500,
+                  const SizedBox(height: 22),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      monthLabel,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: AppColors.subtitleGrey,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                   ),
-                ),
-                for (final entry in entries) ...[
-                  _AttendanceCard(
-                    dateLabel: _fmtDate(entry.date),
-                    status: entry.status,
-                    checkIn: _fmtTime(entry.checkIn),
-                    checkOut: _fmtTime(entry.checkOut),
-                    hours: _fmtDuration(entry.hours),
-                  ),
-                  const SizedBox(height: 12),
+                  if (!_loading && days.isEmpty)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: AppColors.borderGrey),
+                      ),
+                      child: const Center(
+                        child: Text(
+                          'No attendance records this month',
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: AppColors.subtitleGrey,
+                          ),
+                        ),
+                      ),
+                    ),
+                  for (final entry in days.reversed) ...[
+                    _AttendanceCard(
+                      dateLabel: _fmtDate(entry.date),
+                      statusStyle: _statusStyle(entry),
+                      checkIn: _fmtTime(entry.firstInAt),
+                      checkOut: _fmtTime(entry.lastOutAt),
+                      hours: _fmtDuration(entry.duration),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                 ],
-              ],
-            ),
+              ),
             ),
           ),
         ),
@@ -248,14 +300,14 @@ class _Stat extends StatelessWidget {
 
 class _AttendanceCard extends StatelessWidget {
   final String dateLabel;
-  final String status;
+  final ({Color bg, Color fg, String label}) statusStyle;
   final String checkIn;
   final String checkOut;
   final String hours;
 
   const _AttendanceCard({
     required this.dateLabel,
-    required this.status,
+    required this.statusStyle,
     required this.checkIn,
     required this.checkOut,
     required this.hours,
@@ -290,15 +342,15 @@ class _AttendanceCard extends StatelessWidget {
                   vertical: 5,
                 ),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFD1FAE5),
+                  color: statusStyle.bg,
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  status,
-                  style: const TextStyle(
+                  statusStyle.label,
+                  style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Color(0xFF065F46),
+                    color: statusStyle.fg,
                   ),
                 ),
               ),
@@ -312,7 +364,7 @@ class _AttendanceCard extends StatelessWidget {
               Expanded(
                 child: _TimeCol(
                   icon: Icons.login_rounded,
-                  iconColor: Color(0xFF10B981),
+                  iconColor: const Color(0xFF10B981),
                   value: checkIn,
                   label: 'Check In',
                 ),
@@ -325,7 +377,7 @@ class _AttendanceCard extends StatelessWidget {
               Expanded(
                 child: _TimeCol(
                   icon: Icons.logout_rounded,
-                  iconColor: Color(0xFFEF4444),
+                  iconColor: const Color(0xFFEF4444),
                   value: checkOut,
                   label: 'Check Out',
                 ),
