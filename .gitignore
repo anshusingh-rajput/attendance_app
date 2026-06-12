@@ -4,6 +4,11 @@
 *.pyc
 *.swp
 .DS_Store
+
+# Release signing — keep secrets out of git
+android/key.properties
+android/app/*.jks
+android/app/*.keystore
 .atom/
 .build/
 .buildlog/

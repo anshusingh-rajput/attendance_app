@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
+import '../services/sim_info_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_logo.dart';
 import 'forgot_password_screen.dart';
@@ -17,12 +19,228 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
   bool _rememberMe = false;
+  List<SimCardInfo> _availableSims = [];
+  bool _loadingSims = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _preloadSims());
+  }
 
   @override
   void dispose() {
     _usernameController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  Future<void> _preloadSims() async {
+    setState(() => _loadingSims = true);
+    try {
+      await Permission.phone.request();
+      final sims = await SimInfoService.instance.getSimCards();
+      if (!mounted) return;
+      setState(() {
+        _availableSims = sims;
+        _loadingSims = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _loadingSims = false);
+    }
+  }
+
+  Future<void> _openSimPicker() async {
+    setState(() => _loadingSims = true);
+
+    // 1) Try Google's Phone Number Hint sheet first (no permission needed,
+    //    works on most devices even when the SIM has no stored number).
+    try {
+      final hinted = await SimInfoService.instance.requestPhoneNumberHint();
+      if (!mounted) return;
+      if (hinted != null && hinted.trim().isNotEmpty) {
+        setState(() => _loadingSims = false);
+        _setNumber(hinted);
+        return;
+      }
+    } catch (_) {
+      // fall through to the SIM-read flow below
+    }
+
+    // 2) Fallback: read numbers directly from the SIM cards.
+    try {
+      final phoneStatus = await Permission.phone.request();
+      if (!mounted) return;
+      if (!phoneStatus.isGranted) {
+        setState(() => _loadingSims = false);
+        _showSimMessage(
+          'Phone permission denied. Allow it from app settings.',
+        );
+        return;
+      }
+
+      final sims = await SimInfoService.instance.getSimCards();
+      if (!mounted) return;
+      setState(() {
+        _availableSims = sims;
+        _loadingSims = false;
+      });
+
+      if (_availableSims.isEmpty) {
+        _showSimMessage('No SIM card detected on this device.');
+        return;
+      }
+
+      final chosen = await _showSimPicker(_availableSims);
+      if (!mounted || chosen == null) return;
+
+      if (!chosen.hasNumber) {
+        _showSimMessage(
+          '${chosen.label}: number is not stored on this SIM, so it '
+          'cannot be read automatically. Please type it manually.',
+        );
+        return;
+      }
+      _setNumber(chosen.number);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadingSims = false);
+      _showSimMessage('Could not read SIMs: ${e.toString()}');
+    }
+  }
+
+  void _showSimMessage(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  void _setNumber(String raw) {
+    var num = raw.replaceAll(RegExp(r'\s'), '').trim();
+    // Strip +91 / 91 prefix if present
+    if (num.startsWith('+91')) num = num.substring(3);
+    if (num.startsWith('91') && num.length > 10) num = num.substring(2);
+    if (num.startsWith('0') && num.length == 11) num = num.substring(1);
+    setState(() {
+      _usernameController.text = num;
+    });
+  }
+
+  Future<SimCardInfo?> _showSimPicker(List<SimCardInfo> sims) {
+    return showModalBottomSheet<SimCardInfo>(
+      context: context,
+      isDismissible: false,
+      enableDrag: false,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'Choose SIM',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.darkText,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Select the SIM you want to login with',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppColors.subtitleGrey,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                for (final s in sims)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: InkWell(
+                      onTap: () => Navigator.pop(ctx, s),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7F8FA),
+                          borderRadius: BorderRadius.circular(12),
+                          border:
+                              Border.all(color: AppColors.borderGrey),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                color: AppColors.primaryBlue
+                                    .withValues(alpha: 0.12),
+                                shape: BoxShape.circle,
+                              ),
+                              alignment: Alignment.center,
+                              child: const Icon(
+                                Icons.sim_card_rounded,
+                                color: AppColors.primaryBlue,
+                                size: 22,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    s.label,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppColors.darkText,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    s.hasNumber
+                                        ? s.number
+                                        : '(Number not available)',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: s.hasNumber
+                                          ? AppColors.subtitleGrey
+                                          : Colors.redAccent,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const Icon(
+                              Icons.chevron_right_rounded,
+                              color: AppColors.subtitleGrey,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _handleSignIn() {
@@ -66,7 +284,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Sign in to your Attendance App account',
+                  'Sign in to your HIMMAT account',
                   style: TextStyle(
                     fontSize: 16,
                     color: AppColors.subtitleGrey,
@@ -74,16 +292,35 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
                 const SizedBox(height: 36),
-                const _FieldLabel('Username'),
+                const _FieldLabel('Username / Mobile Number'),
                 const SizedBox(height: 8),
                 _AppTextField(
                   controller: _usernameController,
-                  hintText: 'Enter your username',
+                  hintText: 'Tap SIM icon to select your number',
                   keyboardType: TextInputType.text,
+                  readOnly: true,
+                  onTap: _loadingSims ? null : _openSimPicker,
                   prefixIcon: Icons.person_outline_rounded,
+                  suffixIcon: IconButton(
+                    tooltip: 'Pick from SIM',
+                    onPressed: _loadingSims ? null : _openSimPicker,
+                    icon: _loadingSims
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.primaryBlue,
+                            ),
+                          )
+                        : const Icon(
+                            Icons.sim_card_rounded,
+                            color: AppColors.primaryBlue,
+                          ),
+                  ),
                   validator: (value) {
                     if (value == null || value.trim().isEmpty) {
-                      return 'Please enter your username';
+                      return 'Please enter your username or pick from SIM';
                     }
                     return null;
                   },
@@ -172,7 +409,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 24),
                 const Center(
                   child: Text(
-                    'Attendance App v1.0',
+                    'HIMMAT v1.0',
                     style: TextStyle(
                       fontSize: 13,
                       color: AppColors.versionGrey,
@@ -214,6 +451,9 @@ class _AppTextField extends StatelessWidget {
   final bool obscureText;
   final TextInputType? keyboardType;
   final String? Function(String?)? validator;
+  final bool enabled;
+  final bool readOnly;
+  final VoidCallback? onTap;
 
   const _AppTextField({
     required this.controller,
@@ -223,6 +463,9 @@ class _AppTextField extends StatelessWidget {
     this.obscureText = false,
     this.keyboardType,
     this.validator,
+    this.enabled = true,
+    this.readOnly = false,
+    this.onTap,
   });
 
   @override
@@ -232,6 +475,10 @@ class _AppTextField extends StatelessWidget {
       obscureText: obscureText,
       keyboardType: keyboardType,
       validator: validator,
+      enabled: enabled,
+      readOnly: readOnly,
+      onTap: onTap,
+      showCursor: !readOnly,
       style: const TextStyle(fontSize: 16, color: AppColors.darkText),
       decoration: InputDecoration(
         hintText: hintText,
@@ -242,7 +489,7 @@ class _AppTextField extends StatelessWidget {
         prefixIcon: Icon(prefixIcon, color: AppColors.iconGrey, size: 22),
         suffixIcon: suffixIcon,
         filled: true,
-        fillColor: Colors.white,
+        fillColor: enabled ? Colors.white : const Color(0xFFF3F4F6),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
         enabledBorder: OutlineInputBorder(

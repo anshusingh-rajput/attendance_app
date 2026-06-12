@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_logo.dart';
 import '../services/auth_service.dart';
+import '../services/consent_service.dart';
+import 'consent_screen.dart';
 import 'home_screen.dart';
 import 'registration_selfie_screen.dart';
 
@@ -40,6 +42,24 @@ class _LoaderScreenState extends State<LoaderScreen> {
       final photoUrl = await _auth.getProfilePhotoUrl();
       if (!mounted) return;
       final needsSetup = photoUrl == null || photoUrl.isEmpty;
+
+      // First sign-in → show the one-time consent form before entering.
+      final username = await _auth.getUsername();
+      final consented = await ConsentService.instance.hasConsented(username);
+      if (!mounted) return;
+      if (!consented) {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => ConsentScreen(
+              token: result.token!,
+              needsSetup: needsSetup,
+              username: username,
+            ),
+          ),
+        );
+        return;
+      }
+
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => needsSetup
@@ -67,7 +87,7 @@ class _LoaderScreenState extends State<LoaderScreen> {
               const AppLogo(size: 96, iconSize: 48, radius: 22),
               const SizedBox(height: 28),
               const Text(
-                'Attendance App',
+                'HIMMAT',
                 style: TextStyle(
                   fontSize: 32,
                   fontWeight: FontWeight.w700,

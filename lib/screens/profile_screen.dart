@@ -1,7 +1,11 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../theme/app_theme.dart';
 import '../data/mock_data.dart';
 import '../models/user.dart';
+import '../services/attendance_service.dart';
 import '../services/auth_service.dart';
 import '../services/mobile_service.dart';
 import 'forgot_password_screen.dart';
@@ -18,6 +22,11 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   final _auth = AuthService();
+  final _attendance = AttendanceService();
+  final _picker = ImagePicker();
+  final _mobile = MobileService();
+  String? _photoUrlOverride;
+  bool _uploadingPhoto = false;
   String? _firstNameOverride;
   String? _lastNameOverride;
   String? _phoneOverride;
@@ -40,7 +49,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   String get _phone => _phoneOverride ?? MockUser.phone;
 
-  String? get _photoUrl => widget.user?.profilePhotoUrl;
+  String? get _photoUrl => _photoUrlOverride ?? widget.user?.profilePhotoUrl;
 
   String get _initials {
     if (_firstNameOverride != null && _firstNameOverride!.isNotEmpty) {
@@ -53,12 +62,132 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _logout() async {
+    // Blocking loader while we auto check-out (if needed) and sign out.
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: CircularProgressIndicator(
+          valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryBlue),
+        ),
+      ),
+    );
+
+    // If the user is still checked in, perform an automatic check-out first.
+    try {
+      if (await _attendance.isCheckedInToday()) {
+        await _attendance.punch(direction: PunchDirection.checkOut);
+      }
+    } catch (_) {
+      // Don't block sign-out if the auto check-out fails (e.g. no network
+      // or outside geofence) — proceed to log the user out regardless.
+    }
+
     await _auth.logout();
     if (!mounted) return;
     Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (_) => const LoginScreen()),
       (route) => false,
     );
+  }
+
+  Future<void> _changeProfilePhoto() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.borderGrey,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.camera_alt_rounded,
+                  color: AppColors.primaryBlue),
+              title: const Text('Take Photo'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_rounded,
+                  color: AppColors.primaryBlue),
+              title: const Text('Choose from Gallery'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+
+    // CAMERA permission is declared in the manifest, so it must be granted at
+    // runtime before launching the camera.
+    if (source == ImageSource.camera) {
+      final status = await Permission.camera.request();
+      if (!mounted) return;
+      if (!status.isGranted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Camera permission denied. Allow it in settings.'),
+          ),
+        );
+        return;
+      }
+    }
+
+    XFile? picked;
+    try {
+      picked = await _picker.pickImage(
+        source: source,
+        imageQuality: 85,
+        maxWidth: 1080,
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open ${source.name}: $e')),
+      );
+      return;
+    }
+    if (picked == null) return;
+
+    setState(() => _uploadingPhoto = true);
+    final result = await _mobile.updateMe(profilePhoto: File(picked.path));
+    if (!mounted) return;
+    setState(() => _uploadingPhoto = false);
+
+    if (result.isSuccess) {
+      final url = result.user?.profilePhotoUrl;
+      if (url != null && url.isNotEmpty) {
+        // Cache-bust so the new image shows immediately (same URL otherwise
+        // returns the cached old image).
+        final bust = DateTime.now().millisecondsSinceEpoch;
+        setState(() {
+          _photoUrlOverride =
+              url.contains('?') ? '$url&t=$bust' : '$url?t=$bust';
+        });
+      }
+      await widget.onRefreshUser?.call();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Profile picture updated')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.error ?? 'Failed to update photo')),
+      );
+    }
   }
 
   void _openEditProfile() {
@@ -174,6 +303,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   child: _ProfileAvatar(
                     photoUrl: _photoUrl,
                     initials: _initials,
+                    uploading: _uploadingPhoto,
+                    onTap: _uploadingPhoto ? null : _changeProfilePhoto,
                   ),
                 ),
                 const SizedBox(height: 18),
@@ -249,39 +380,92 @@ class _ProfileScreenState extends State<ProfileScreen> {
 class _ProfileAvatar extends StatelessWidget {
   final String? photoUrl;
   final String initials;
+  final bool uploading;
+  final VoidCallback? onTap;
 
-  const _ProfileAvatar({required this.photoUrl, required this.initials});
+  const _ProfileAvatar({
+    required this.photoUrl,
+    required this.initials,
+    this.uploading = false,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final hasPhoto = photoUrl != null && photoUrl!.isNotEmpty;
-    return Container(
-      width: 110,
-      height: 110,
-      decoration: BoxDecoration(
-        color: AppColors.primaryBlue.withValues(alpha: 0.12),
-        shape: BoxShape.circle,
-      ),
-      child: ClipOval(
+    return GestureDetector(
+      onTap: onTap,
+      child: SizedBox(
+        width: 118,
+        height: 118,
         child: Stack(
-          alignment: Alignment.center,
           children: [
-            Text(
-              initials,
-              style: const TextStyle(
-                fontSize: 36,
-                fontWeight: FontWeight.w700,
-                color: AppColors.primaryBlue,
+            Container(
+              width: 110,
+              height: 110,
+              decoration: BoxDecoration(
+                color: AppColors.primaryBlue.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: ClipOval(
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Text(
+                      initials,
+                      style: const TextStyle(
+                        fontSize: 36,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.primaryBlue,
+                      ),
+                    ),
+                    if (hasPhoto)
+                      Image.network(
+                        photoUrl!,
+                        fit: BoxFit.cover,
+                        width: 110,
+                        height: 110,
+                        errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                      ),
+                    if (uploading)
+                      Container(
+                        width: 110,
+                        height: 110,
+                        color: Colors.black.withValues(alpha: 0.35),
+                        alignment: Alignment.center,
+                        child: const SizedBox(
+                          width: 26,
+                          height: 26,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.5,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ),
-            if (hasPhoto)
-              Image.network(
-                photoUrl!,
-                fit: BoxFit.cover,
-                width: 110,
-                height: 110,
-                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+            // Camera badge to signal the avatar is editable.
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: AppColors.primaryBlue,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2.5),
+                ),
+                child: const Icon(
+                  Icons.camera_alt_rounded,
+                  color: Colors.white,
+                  size: 17,
+                ),
               ),
+            ),
           ],
         ),
       ),
@@ -563,6 +747,7 @@ class _EditProfileSheetState extends State<_EditProfileSheet> {
               label: 'Phone',
               controller: _phoneCtrl,
               keyboardType: TextInputType.phone,
+              enabled: false,
             ),
             const SizedBox(height: 22),
             SizedBox(

@@ -219,6 +219,38 @@ class AuthService {
     }
   }
 
+  /// Change the password for the currently logged-in user. Sends the Bearer
+  /// auth token in the header and the new password in the body — no email
+  /// reset token required.
+  Future<SimpleResult> changePassword({required String newPassword}) async {
+    try {
+      final token = await getToken();
+      if (token == null || token.isEmpty) {
+        return SimpleResult.failure('Not authenticated');
+      }
+      final response = await http
+          .post(
+            Uri.parse('$_baseUrl/api/auth/change-password'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({'newPassword': newPassword}),
+          )
+          .timeout(const Duration(seconds: 20));
+
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return SimpleResult.success();
+      }
+      final reason = _extractError(response.body) ??
+          'Change password failed (${response.statusCode})';
+      return SimpleResult.failure(reason);
+    } catch (e) {
+      return SimpleResult.failure('Network error: ${e.toString()}');
+    }
+  }
+
   Future<void> logout() async {
     final token = await getToken();
     if (token != null && token.isNotEmpty) {

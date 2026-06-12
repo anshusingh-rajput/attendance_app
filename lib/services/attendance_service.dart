@@ -275,6 +275,16 @@ class AttendanceService {
     }
   }
 
+  /// True if the user has checked in today but has not checked out yet.
+  Future<bool> isCheckedInToday() async {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final days = await fetchSummary(from: today, to: today);
+    if (days == null || days.isEmpty) return false;
+    final rec = days.first;
+    return rec.firstInAt != null && rec.lastOutAt == null;
+  }
+
   String _fmtDate(DateTime d) {
     final y = d.year.toString().padLeft(4, '0');
     final m = d.month.toString().padLeft(2, '0');

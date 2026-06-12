@@ -22,6 +22,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   final _usernameCtrl = TextEditingController();
   final _tokenCtrl = TextEditingController();
   final _newPasswordCtrl = TextEditingController();
+  final _confirmPasswordCtrl = TextEditingController();
   bool _busy = false;
   bool _emailSent = false;
   bool _obscure = true;
@@ -39,7 +40,41 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     _usernameCtrl.dispose();
     _tokenCtrl.dispose();
     _newPasswordCtrl.dispose();
+    _confirmPasswordCtrl.dispose();
     super.dispose();
+  }
+
+  /// Change password for the logged-in user — sends Bearer token + new
+  /// password only (no email reset token).
+  Future<void> _onChangePassword() async {
+    final newPassword = _newPasswordCtrl.text;
+    final confirm = _confirmPasswordCtrl.text;
+    if (newPassword.length < 6) {
+      _snack('New password must be at least 6 characters');
+      return;
+    }
+    if (newPassword != confirm) {
+      _snack('Passwords do not match');
+      return;
+    }
+    setState(() => _busy = true);
+    final result = await _auth.changePassword(newPassword: newPassword);
+    if (!mounted) return;
+    setState(() => _busy = false);
+
+    if (result.isSuccess) {
+      _snack('Password changed. Please login again with the new password.');
+      await Future.delayed(const Duration(seconds: 1));
+      if (!mounted) return;
+      await _auth.logout();
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const LoginScreen()),
+        (route) => false,
+      );
+    } else {
+      _snack(result.error ?? 'Change password failed');
+    }
   }
 
   Future<void> _onRequestReset() async {
@@ -141,12 +176,11 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                _emailSent
-                    ? 'Check your email for the reset token. Paste it below '
-                        'and enter your new password.'
-                    : (widget.isChangePassword
-                        ? 'We will send a reset token to your registered '
-                            'email. Use it below to set a new password.'
+                widget.isChangePassword
+                    ? 'Enter a new password for your account below.'
+                    : (_emailSent
+                        ? 'Check your email for the reset token. Paste it '
+                            'below and enter your new password.'
                         : 'Enter your username. We will send a password '
                             'reset token to your registered email.'),
                 style: const TextStyle(
@@ -155,9 +189,14 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                 ),
               ),
               const SizedBox(height: 28),
-              if (!_emailSent) ..._buildRequestForm() else ..._buildResetForm(),
+              if (widget.isChangePassword)
+                ..._buildChangeForm()
+              else if (!_emailSent)
+                ..._buildRequestForm()
+              else
+                ..._buildResetForm(),
               const SizedBox(height: 16),
-              if (_emailSent)
+              if (!widget.isChangePassword && _emailSent)
                 Center(
                   child: TextButton(
                     onPressed: _busy
@@ -245,6 +284,54 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         label: 'Reset Password',
         busy: _busy,
         onTap: _onResetPassword,
+      ),
+    ];
+  }
+
+  List<Widget> _buildChangeForm() {
+    return [
+      const Text(
+        'New Password',
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: AppColors.darkText,
+        ),
+      ),
+      const SizedBox(height: 8),
+      _Field(
+        controller: _newPasswordCtrl,
+        hint: 'Enter new password (min 6 chars)',
+        icon: Icons.lock_outline_rounded,
+        obscure: _obscure,
+        suffix: IconButton(
+          onPressed: () => setState(() => _obscure = !_obscure),
+          icon: Icon(
+            _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+          ),
+        ),
+      ),
+      const SizedBox(height: 18),
+      const Text(
+        'Confirm New Password',
+        style: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w600,
+          color: AppColors.darkText,
+        ),
+      ),
+      const SizedBox(height: 8),
+      _Field(
+        controller: _confirmPasswordCtrl,
+        hint: 'Re-enter new password',
+        icon: Icons.lock_outline_rounded,
+        obscure: _obscure,
+      ),
+      const SizedBox(height: 24),
+      _PrimaryButton(
+        label: 'Change Password',
+        busy: _busy,
+        onTap: _onChangePassword,
       ),
     ];
   }

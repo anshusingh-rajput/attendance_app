@@ -24,12 +24,19 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Future<void> _loadSummary() async {
     final now = DateTime.now();
     final from = DateTime(now.year, now.month, 1);
-    final to = DateTime(now.year, now.month + 1, 0);
+    // Only up to today — future dates of this month must not be shown.
+    final today = DateTime(now.year, now.month, now.day);
 
-    final result = await _attendance.fetchSummary(from: from, to: to);
+    final result = await _attendance.fetchSummary(from: from, to: today);
     if (!mounted) return;
+    // Safety net: drop any record dated after today in case the API still
+    // returns future-dated (e.g. "Absent") entries.
+    final visible = (result ?? const <AttendanceDay>[])
+        .where((d) =>
+            !DateTime(d.date.year, d.date.month, d.date.day).isAfter(today))
+        .toList();
     setState(() {
-      _days = result;
+      _days = visible;
       _loading = false;
     });
   }

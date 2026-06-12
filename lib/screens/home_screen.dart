@@ -4,6 +4,7 @@ import '../theme/app_theme.dart';
 import '../data/mock_data.dart';
 import '../models/user.dart';
 import '../services/attendance_service.dart';
+import '../services/gps_tracking_service.dart';
 import '../services/mobile_service.dart';
 import 'checkin_camera_screen.dart';
 import 'history_screen.dart';
@@ -77,7 +78,81 @@ class _DashboardTabState extends State<_DashboardTab> {
   bool _isPunching = false;
   bool _externalCheckedIn = false;
 
+  // Working-time accounting that pauses when the user leaves the geofence.
+  // `_accumulated` holds time already banked from previous inside-segments;
+  // `_segmentStart` marks the start of the current (running) inside-segment,
+  // or is null while the timer is paused (outside the geofence).
+  Duration _accumulated = Duration.zero;
+  DateTime? _segmentStart;
+  bool _insideGeofence = true;
+
   bool get _isCheckedIn => _checkInAt != null || _externalCheckedIn;
+
+  /// True while checked in but currently outside the geofence (timer paused).
+  bool get _isPausedOutside => _isCheckedIn && !_insideGeofence;
+
+  /// Total worked time so far — running segment counts only while inside.
+  Duration _currentElapsed() {
+    var total = _accumulated;
+    if (_insideGeofence && _segmentStart != null) {
+      total += DateTime.now().difference(_segmentStart!);
+    }
+    return total;
+  }
+
+  void _startTicker() {
+    _ticker?.cancel();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _checkInAt == null) return;
+      setState(() => _elapsed = _currentElapsed());
+    });
+  }
+
+  /// Begins the worked-time accounting from [from], respecting the current
+  /// inside/outside state.
+  void _beginTiming(DateTime from) {
+    _insideGeofence = GpsTrackingService.instance.insideGeofence.value;
+    if (_insideGeofence) {
+      _accumulated = Duration.zero;
+      _segmentStart = from;
+    } else {
+      // Already outside when timing starts → start paused at zero running.
+      _accumulated = Duration.zero;
+      _segmentStart = null;
+    }
+    _elapsed = _currentElapsed();
+    _startTicker();
+  }
+
+  void _stopTiming() {
+    _ticker?.cancel();
+    _ticker = null;
+    _accumulated = Duration.zero;
+    _segmentStart = null;
+    _elapsed = Duration.zero;
+  }
+
+  /// Called when the user crosses the geofence boundary while checked in.
+  void _onGeofenceChange() {
+    final inside = GpsTrackingService.instance.insideGeofence.value;
+    if (inside == _insideGeofence) return;
+    if (!mounted) return;
+    setState(() {
+      if (!inside) {
+        // Leaving the area → bank the running segment and pause.
+        if (_segmentStart != null) {
+          _accumulated += DateTime.now().difference(_segmentStart!);
+          _segmentStart = null;
+        }
+        _insideGeofence = false;
+      } else {
+        // Re-entering → resume a fresh running segment.
+        _insideGeofence = true;
+        if (_isCheckedIn) _segmentStart = DateTime.now();
+      }
+      _elapsed = _currentElapsed();
+    });
+  }
 
   static const _onDutyStates = {
     'onduty',
@@ -95,6 +170,8 @@ class _DashboardTabState extends State<_DashboardTab> {
   @override
   void initState() {
     super.initState();
+    _insideGeofence = GpsTrackingService.instance.insideGeofence.value;
+    GpsTrackingService.instance.insideGeofence.addListener(_onGeofenceChange);
     _syncFromUser();
     _loadTodayRecord();
   }
@@ -121,14 +198,14 @@ class _DashboardTabState extends State<_DashboardTab> {
       // to check out as long as no check-out has been recorded.
       if (rec.firstInAt != null && rec.lastOutAt == null) {
         _checkInAt = rec.firstInAt;
-        _elapsed = DateTime.now().difference(rec.firstInAt!);
-        _ticker?.cancel();
-        _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-          if (!mounted || _checkInAt == null) return;
-          setState(() {
-            _elapsed = DateTime.now().difference(_checkInAt!);
-          });
-        });
+        // Resume location tracking so geofence pause/resume works after an
+        // app restart, then start the worked-time counter from check-in.
+        GpsTrackingService.instance.startTracking();
+        _insideGeofence = GpsTrackingService.instance.insideGeofence.value;
+        _accumulated = Duration.zero;
+        _segmentStart = _insideGeofence ? rec.firstInAt : null;
+        _elapsed = _currentElapsed();
+        _startTicker();
       }
     });
   }
@@ -155,6 +232,8 @@ class _DashboardTabState extends State<_DashboardTab> {
 
   @override
   void dispose() {
+    GpsTrackingService.instance.insideGeofence
+        .removeListener(_onGeofenceChange);
     _ticker?.cancel();
     super.dispose();
   }
@@ -550,12 +629,11 @@ class _DashboardTabState extends State<_DashboardTab> {
     }
 
     if (_isCheckedIn) {
-      _ticker?.cancel();
       setState(() {
         _lastCheckOut = DateTime.now();
         _checkInAt = null;
         _externalCheckedIn = false;
-        _elapsed = Duration.zero;
+        _stopTiming();
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Checked out'), duration: Duration(seconds: 1)),
@@ -566,13 +644,7 @@ class _DashboardTabState extends State<_DashboardTab> {
         _checkInAt = now;
         _lastCheckIn = now;
         _lastCheckOut = null;
-        _elapsed = Duration.zero;
-      });
-      _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (!mounted || _checkInAt == null) return;
-        setState(() {
-          _elapsed = DateTime.now().difference(_checkInAt!);
-        });
+        _beginTiming(now);
       });
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Checked in'), duration: Duration(seconds: 1)),
@@ -591,6 +663,7 @@ class _DashboardTabState extends State<_DashboardTab> {
             greeting: _greeting,
             name: widget.user?.firstName ?? MockUser.firstName,
             initials: widget.user?.initials ?? MockUser.initials,
+            photoUrl: widget.user?.profilePhotoUrl,
             onMenuTap: _openDayMarkSheet,
           ),
           const SizedBox(height: 20),
@@ -614,10 +687,16 @@ class _DashboardTabState extends State<_DashboardTab> {
             child: Text(
               _isPunching
                   ? 'Getting location…'
-                  : (_isCheckedIn ? 'Tap to check out' : 'Tap to check in'),
-              style: const TextStyle(
+                  : _isPausedOutside
+                      ? 'Outside area — timer paused'
+                      : (_isCheckedIn ? 'Tap to check out' : 'Tap to check in'),
+              style: TextStyle(
                 fontSize: 14,
-                color: AppColors.subtitleGrey,
+                color: _isPausedOutside
+                    ? const Color(0xFFEF4444)
+                    : AppColors.subtitleGrey,
+                fontWeight:
+                    _isPausedOutside ? FontWeight.w600 : FontWeight.w400,
               ),
             ),
           ),
@@ -666,12 +745,14 @@ class _Header extends StatelessWidget {
   final String greeting;
   final String name;
   final String initials;
+  final String? photoUrl;
   final VoidCallback? onMenuTap;
 
   const _Header({
     required this.greeting,
     required this.name,
     required this.initials,
+    this.photoUrl,
     this.onMenuTap,
   });
 
@@ -720,12 +801,27 @@ class _Header extends StatelessWidget {
             shape: BoxShape.circle,
           ),
           alignment: Alignment.center,
-          child: Text(
-            initials,
-            style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
-              color: AppColors.primaryBlue,
+          child: ClipOval(
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                Text(
+                  initials,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primaryBlue,
+                  ),
+                ),
+                if (photoUrl != null && photoUrl!.isNotEmpty)
+                  Image.network(
+                    photoUrl!,
+                    width: 48,
+                    height: 48,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                  ),
+              ],
             ),
           ),
         ),
