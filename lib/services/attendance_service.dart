@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/attendance_day.dart';
 import 'auth_service.dart';
+import 'consent_service.dart';
 import 'geofence_service.dart';
 import 'gps_tracking_service.dart';
 
@@ -23,12 +24,26 @@ class PunchResult {
   final String? error;
   final String? rawBody;
 
-  const PunchResult._({required this.isSuccess, this.error, this.rawBody});
+  /// True when the backend rejected the punch because a fresh privacy consent
+  /// must be accepted first. The UI uses this to route the user to the consent
+  /// screen instead of showing a dead-end error.
+  final bool requiresConsent;
+
+  const PunchResult._({
+    required this.isSuccess,
+    this.error,
+    this.rawBody,
+    this.requiresConsent = false,
+  });
 
   factory PunchResult.success({String? rawBody}) =>
       PunchResult._(isSuccess: true, rawBody: rawBody);
-  factory PunchResult.failure(String error) =>
-      PunchResult._(isSuccess: false, error: error);
+  factory PunchResult.failure(String error, {bool requiresConsent = false}) =>
+      PunchResult._(
+        isSuccess: false,
+        error: error,
+        requiresConsent: requiresConsent,
+      );
 }
 
 class DayMarkResult {
@@ -118,7 +133,10 @@ class AttendanceService {
       }
       final reason = _extractReason(response.body) ??
           'Punch failed (${response.statusCode})';
-      return PunchResult.failure(reason);
+      return PunchResult.failure(
+        reason,
+        requiresConsent: ConsentService.isConsentError(reason),
+      );
     } catch (e) {
       return PunchResult.failure('Network error: ${e.toString()}');
     }

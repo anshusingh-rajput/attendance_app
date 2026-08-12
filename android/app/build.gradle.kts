@@ -54,7 +54,7 @@ android {
 
     buildTypes {
         release {
-            // Sign release builds with the dedicated HIMMAT release key when
+            // Sign release builds with the dedicated MEDHA release key when
             // key.properties is present; fall back to debug keys otherwise.
             signingConfig = if (keystorePropertiesFile.exists()) {
                 signingConfigs.getByName("release")

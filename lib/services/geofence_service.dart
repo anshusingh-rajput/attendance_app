@@ -15,21 +15,72 @@ class Geofence {
   });
 
   factory Geofence.fromJson(Map<String, dynamic> json) {
-    final coords = (json['coordinates'] as List?) ?? const [];
-    final parsed = <List<double>>[];
-    for (final c in coords) {
-      if (c is List && c.length >= 2) {
-        parsed.add([
-          (c[0] as num).toDouble(),
-          (c[1] as num).toDouble(),
-        ]);
+    return Geofence(
+      id: (json['id'] as num?)?.toInt() ??
+          (json['geofenceId'] as num?)?.toInt() ??
+          0,
+      name: (json['name'] as String?) ??
+          (json['title'] as String?) ??
+          'Unknown',
+      coordinates: _parseCoordinates(json),
+    );
+  }
+
+  /// Extracts the polygon vertices as `[lat, lng]` pairs, tolerating the
+  /// different shapes the backend has used over time. Without this, a single
+  /// shape change makes the list parse to empty → every point counts as
+  /// "inside" → no breach is ever detected.
+  static List<List<double>> _parseCoordinates(Map<String, dynamic> json) {
+    // The vertex array may live under any of these keys.
+    dynamic raw;
+    for (final key in const [
+      'coordinates',
+      'points',
+      'polygon',
+      'path',
+      'vertices',
+      'boundary',
+    ]) {
+      if (json[key] is List && (json[key] as List).isNotEmpty) {
+        raw = json[key];
+        break;
       }
     }
-    return Geofence(
-      id: (json['id'] as num?)?.toInt() ?? 0,
-      name: (json['name'] as String?) ?? 'Unknown',
-      coordinates: parsed,
-    );
+    if (raw is! List) return const [];
+
+    // GeoJSON Polygon nests one extra level: [[[lng,lat], ...]] — unwrap it.
+    if (raw.isNotEmpty && raw.first is List && (raw.first as List).isNotEmpty &&
+        (raw.first as List).first is List) {
+      raw = raw.first;
+    }
+
+    final parsed = <List<double>>[];
+    for (final c in raw) {
+      final point = _parsePoint(c);
+      if (point != null) parsed.add(point);
+    }
+    return parsed;
+  }
+
+  /// Parses one vertex into `[lat, lng]` from either an array (`[lat, lng]`)
+  /// or an object (`{lat/latitude, lng/lon/long/longitude}`).
+  static List<double>? _parsePoint(dynamic c) {
+    if (c is List && c.length >= 2 && c[0] is num && c[1] is num) {
+      return [(c[0] as num).toDouble(), (c[1] as num).toDouble()];
+    }
+    if (c is Map) {
+      final lat = c['lat'] ?? c['latitude'] ?? c['Latitude'] ?? c['Lat'];
+      final lng = c['lng'] ??
+          c['lon'] ??
+          c['long'] ??
+          c['longitude'] ??
+          c['Longitude'] ??
+          c['Lng'];
+      if (lat is num && lng is num) {
+        return [lat.toDouble(), lng.toDouble()];
+      }
+    }
+    return null;
   }
 
   bool contains(double lat, double lng) {
@@ -59,6 +110,15 @@ class GeofenceService {
 
   List<Geofence> _cached = [];
   DateTime? _cachedAt;
+  bool _lastLoadOk = false;
+
+  /// Number of fences currently loaded (for on-screen diagnostics).
+  int get fenceCount => _cached.length;
+
+  /// Whether the most recent fetch actually returned a usable fence list.
+  /// `false` means we never positively loaded fences — so an "inside" result
+  /// is an assumption, not a verified fact.
+  bool get lastLoadOk => _lastLoadOk;
 
   Future<List<Geofence>> getFences({bool forceRefresh = false}) async {
     if (!forceRefresh &&
@@ -82,18 +142,56 @@ class GeofenceService {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        final fencesList =
-            (data is Map<String, dynamic> ? data['fences'] as List? : null) ??
-                const [];
-        _cached = fencesList
-            .whereType<Map<String, dynamic>>()
-            .map(Geofence.fromJson)
-            .toList();
-        _cachedAt = DateTime.now();
+        final fencesList = _extractFenceList(data);
+        final parsed = fencesList.map(Geofence.fromJson).toList();
+        // Only replace the cache when we got something usable, so a transient
+        // empty/odd response doesn't wipe a previously-good fence list.
+        if (parsed.isNotEmpty) {
+          _cached = parsed;
+          _cachedAt = DateTime.now();
+          _lastLoadOk = true;
+        } else {
+          _lastLoadOk = _cached.isNotEmpty;
+        }
       }
     } catch (_) {}
 
     return _cached;
+  }
+
+  /// Finds the fence array regardless of how the response is wrapped:
+  /// a bare list, or under `fences`/`geofences`/`data`/`items`/`result`,
+  /// including one level of nesting (e.g. `{data: {fences: [...]}}`).
+  List<Map<String, dynamic>> _extractFenceList(dynamic data) {
+    dynamic raw;
+    if (data is List) {
+      raw = data;
+    } else if (data is Map) {
+      for (final key in const [
+        'fences',
+        'geofences',
+        'data',
+        'items',
+        'result',
+        'results',
+      ]) {
+        if (data[key] is List) {
+          raw = data[key];
+          break;
+        }
+      }
+      if (raw == null && data['data'] is Map) {
+        final inner = data['data'] as Map;
+        for (final key in const ['fences', 'geofences', 'items']) {
+          if (inner[key] is List) {
+            raw = inner[key];
+            break;
+          }
+        }
+      }
+    }
+    if (raw is! List) return const [];
+    return raw.whereType<Map<String, dynamic>>().toList();
   }
 
   Future<bool> isInsideAnyFence(double lat, double lng) async {

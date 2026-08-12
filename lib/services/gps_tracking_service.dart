@@ -37,7 +37,7 @@ class GpsTrackingService {
   // How often to re-evaluate inside/outside the geofence, independent of
   // movement — so the working-time counter pauses promptly even if the user
   // stops moving while outside.
-  static const Duration _geofenceCheckInterval = Duration(seconds: 30);
+  static const Duration _geofenceCheckInterval = Duration(seconds: 20);
 
   String? _deviceId;
   bool _isOutside = false;
@@ -47,6 +47,22 @@ class GpsTrackingService {
   /// working-time counter runs until we positively detect a breach). The home
   /// screen listens to this to pause/resume the shift timer.
   final ValueNotifier<bool> insideGeofence = ValueNotifier<bool>(true);
+
+  /// Short, human-readable status of the last geofence check / GPS event POST,
+  /// shown on the home screen so outside-detection and event delivery are
+  /// visible during testing — e.g. "event OUT • HTTP 200 • 14:33:10".
+  final ValueNotifier<String> debugStatus = ValueNotifier<String>('');
+
+  // While the user is OUTSIDE, send an event at most this often so the backend
+  // keeps receiving outside points. Per requirement: outside events go every
+  // 5 minutes (same cadence as the normal GPS heartbeat) — not denser.
+  static const Duration _outsideHeartbeat = Duration(minutes: 5);
+
+  String _stamp() {
+    final n = DateTime.now();
+    String two(int x) => x.toString().padLeft(2, '0');
+    return '${two(n.hour)}:${two(n.minute)}:${two(n.second)}';
+  }
 
   bool get isTracking => _isTracking;
 
@@ -118,6 +134,15 @@ class GpsTrackingService {
     }
     if (pos != null) {
       await _checkBreach(pos);
+      // While outside, keep feeding the backend dense outside points (the
+      // transition event alone can be missed/dropped on a flaky network).
+      if (_isOutside &&
+          (_lastEventSentAt == null ||
+              DateTime.now().difference(_lastEventSentAt!) >=
+                  _outsideHeartbeat)) {
+        _lastEventSentAt = DateTime.now();
+        unawaited(_postEvent(pos, isInside: false));
+      }
     }
   }
 
@@ -156,22 +181,35 @@ class GpsTrackingService {
 
   Future<void> _checkBreach(Position pos) async {
     final fences = await GeofenceService.instance.getFences();
+    final fenceCount = fences.length;
     final isInside = await GeofenceService.instance
         .isInsideAnyFence(pos.latitude, pos.longitude);
     _gpsLog(
       'checkBreach lat=${pos.latitude} lng=${pos.longitude} '
-      'inside=$isInside fences=${fences.length} wasOutside=$_isOutside',
+      'inside=$isInside fences=$fenceCount wasOutside=$_isOutside',
     );
+
+    // If no fences are loaded, inside/outside cannot be judged — surface this
+    // instead of silently assuming "inside" (which is what hides breaches).
+    if (fenceCount == 0) {
+      debugStatus.value = 'NO fences loaded — cannot detect breach • ${_stamp()}';
+    }
 
     if (!isInside) {
       if (!_isOutside) {
         _isOutside = true;
         insideGeofence.value = false;
         // Geofence violation → send the event FIRST so that a failure in the
-        // notification code below can never block the Event API call.
+        // notification code below can never block the Event API call. Use the
+        // reliable sender so a flaky network can't drop the violation event.
         _gpsLog('VIOLATION detected → sending event (isInside=false)');
+        debugStatus.value =
+            'OUTSIDE detected (fences=$fenceCount) → sending event • ${_stamp()}';
         _lastEventSentAt = DateTime.now();
-        unawaited(_postEvent(pos, isInside: false));
+        unawaited(_postEventReliable(pos, isInside: false));
+        // Re-confirm the exit with fresh fixes so the Out row is reliably
+        // recorded even if the first point landed on the fence edge.
+        unawaited(_confirmTransition(isInside: false));
         // Local breach notification (best-effort; must not throw upward).
         try {
           final nearest = await GeofenceService.instance
@@ -188,14 +226,69 @@ class GpsTrackingService {
         insideGeofence.value = true;
         // Returned inside → send the event first, then notify.
         _gpsLog('RETURN detected → sending event (isInside=true)');
+        debugStatus.value = 'returned INSIDE → sending event • ${_stamp()}';
         _lastEventSentAt = DateTime.now();
-        unawaited(_postEvent(pos, isInside: true));
+        unawaited(_postEventReliable(pos, isInside: true));
+        // Re-confirm the return with fresh fixes so the In row is reliably
+        // recorded even if the first point landed on the fence edge.
+        unawaited(_confirmTransition(isInside: true));
         try {
           await NotificationService.instance.showReturnNotification();
         } catch (e) {
           _gpsLog('return notification failed: $e');
         }
       }
+    }
+  }
+
+  /// After a boundary crossing, re-sends the transition a few times with fresh
+  /// GPS fixes. The single transition point is often captured right on the
+  /// fence edge, where GPS jitter makes the backend recompute it as the OLD
+  /// state and skip it (same-state de-dup) — so the admin Event Log misses the
+  /// In/Out row. Sending follow-up fixes makes at least one point land
+  /// unambiguously in the new state, so the crossing is recorded.
+  Future<void> _confirmTransition({
+    required bool isInside,
+    int attempts = 3,
+    Duration gap = const Duration(seconds: 15),
+  }) async {
+    for (var i = 0; i < attempts; i++) {
+      await Future.delayed(gap);
+      if (!_isTracking) return;
+      // Abort if the user has since crossed back the other way.
+      if (isInside == _isOutside) return;
+      Position? pos;
+      try {
+        pos = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            timeLimit: Duration(seconds: 12),
+          ),
+        );
+        _lastPosition = pos;
+      } catch (_) {
+        pos = _lastPosition;
+      }
+      if (pos == null) continue;
+      _lastEventSentAt = DateTime.now();
+      await _postEvent(pos, isInside: isInside);
+    }
+  }
+
+  /// Posts a transition (OUTSIDE / returned-INSIDE) event, retrying a few
+  /// times on failure so a momentary network drop can't lose the event the
+  /// backend needs to record the geofence violation.
+  Future<void> _postEventReliable(
+    Position pos, {
+    required bool isInside,
+    int attempts = 4,
+  }) async {
+    for (var i = 0; i < attempts; i++) {
+      final ok = await _postEvent(pos, isInside: isInside);
+      if (ok || !_isTracking) return;
+      // Stop retrying a stale transition if the state flipped back meanwhile.
+      if (isInside == _isOutside) return;
+      await Future.delayed(Duration(seconds: 3 * (i + 1)));
     }
   }
 
@@ -221,22 +314,29 @@ class GpsTrackingService {
 
       final deviceId = _deviceId ?? await _getOrCreateDeviceId();
 
-      // Backend contract: deviceId at the root, the point itself wrapped in an
-      // "evt" object. Tag each point with the geofence state so the backend can
-      // record violations and compute inside/outside duration.
-      final evt = <String, dynamic>{
+      // Backend contract (POST /api/mobile/gps/event): all point fields are at
+      // the ROOT of the body — deviceId, latitude, longitude, accuracyMeters,
+      // capturedAt. (An earlier "evt" wrapper meant the backend received null
+      // coordinates, so track points were never stored and the geofence
+      // inside/outside duration could not be computed.) The optional
+      // isInsideGeofence flag is sent as an extra hint; the backend also
+      // recomputes inside/outside from the coordinates.
+      final body = <String, dynamic>{
+        'deviceId': deviceId,
         'latitude': pos.latitude,
         'longitude': pos.longitude,
         'accuracyMeters': pos.accuracy,
-        'capturedAt': DateTime.now().toUtc().toIso8601String(),
+        // Must match the punch-in timestamp convention: the backend stores
+        // wall-clock IST with a "Z" suffix (see AttendanceService.punch ->
+        // DeviceTimestamp and AttendanceDay._parseDateTime). Sending true UTC
+        // here (toUtc()) made every point read as 5.5h BEFORE punch-in, so the
+        // backend rejected events with "GPS point is before punch-in time."
+        // (HTTP 422) — that is why violations were never recorded.
+        'capturedAt': '${DateTime.now().toIso8601String()}Z',
       };
       if (isInside != null) {
-        evt['isInsideGeofence'] = isInside;
+        body['isInsideGeofence'] = isInside;
       }
-      final body = <String, dynamic>{
-        'deviceId': deviceId,
-        'evt': evt,
-      };
 
       _gpsLog('POST $_eventPath  body=${jsonEncode(body)}');
       final response = await http
@@ -256,9 +356,15 @@ class GpsTrackingService {
         'RESPONSE status=${response.statusCode} ok=$ok '
         'body=${response.body}',
       );
+      final tag = isInside == null
+          ? 'event'
+          : (isInside ? 'event IN' : 'event OUT');
+      debugStatus.value =
+          '$tag • HTTP ${response.statusCode} • ${_stamp()}';
       return ok;
     } catch (e) {
       _gpsLog('POST FAILED: $e');
+      debugStatus.value = 'event POST FAILED • ${_stamp()}';
       return false;
     }
   }

@@ -15,11 +15,17 @@ class ConsentScreen extends StatefulWidget {
   final bool needsSetup;
   final String? username;
 
+  /// When true, a successful accept just pops this screen with `true` instead
+  /// of navigating into the app. Used when the screen is opened mid-flow (e.g.
+  /// a punch was rejected with "Consent required") so the caller can retry.
+  final bool returnOnAccept;
+
   const ConsentScreen({
     super.key,
     required this.token,
     required this.needsSetup,
     this.username,
+    this.returnOnAccept = false,
   });
 
   @override
@@ -60,11 +66,31 @@ class _ConsentScreenState extends State<ConsentScreen> {
   Future<void> _onAccept() async {
     if (!_agreed || _submitting) return;
     setState(() => _submitting = true);
-    await ConsentService.instance.submitConsent(
+    final ok = await ConsentService.instance.submitConsent(
       username: widget.username,
       version: _doc?.version,
     );
     if (!mounted) return;
+
+    // Only proceed once the backend has actually recorded the acceptance —
+    // otherwise the user would re-enter the app and be blocked again at punch.
+    if (!ok) {
+      setState(() => _submitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Could not record your consent. Check your connection and try again.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (widget.returnOnAccept) {
+      Navigator.of(context).pop(true);
+      return;
+    }
+
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(
         builder: (_) => widget.needsSetup
@@ -80,7 +106,7 @@ class _ConsentScreenState extends State<ConsentScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('Consent required'),
         content: const Text(
-          'You must accept the consent to use HIMMAT. Declining will sign '
+          'You must accept the consent to use MEDHA. Declining will sign '
           'you out. Continue?',
         ),
         actions: [
@@ -286,7 +312,7 @@ class _ConsentScreenState extends State<ConsentScreen> {
 }
 
 const String _consentText = '''
-Welcome to HIMMAT — Attendance Management.
+Welcome to MEDHA — Attendance Management.
 
 By accepting this consent, you acknowledge and agree to the following:
 
@@ -306,7 +332,7 @@ Basic device details (device ID, platform, OS version) are stored to secure your
 The information collected is used solely for attendance management, reporting, and related HR purposes by your organization. It is stored securely and is not shared with third parties except as required by law.
 
 6. Your Acceptance
-By ticking "I Agree" and tapping Accept, you confirm that you have read, understood, and consented to the collection and use of the above data while using HIMMAT.
+By ticking "I Agree" and tapping Accept, you confirm that you have read, understood, and consented to the collection and use of the above data while using MEDHA.
 
 If you do not agree, you will not be able to use the application.
 ''';

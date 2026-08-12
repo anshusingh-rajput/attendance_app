@@ -4,9 +4,11 @@ import '../theme/app_theme.dart';
 import '../data/mock_data.dart';
 import '../models/user.dart';
 import '../services/attendance_service.dart';
+import '../services/auth_service.dart';
 import '../services/gps_tracking_service.dart';
 import '../services/mobile_service.dart';
 import 'checkin_camera_screen.dart';
+import 'consent_screen.dart';
 import 'history_screen.dart';
 import 'leaves_screen.dart';
 import 'profile_screen.dart';
@@ -78,21 +80,43 @@ class _DashboardTabState extends State<_DashboardTab> {
   bool _isPunching = false;
   bool _externalCheckedIn = false;
 
-  // Working-time accounting that pauses when the user leaves the geofence.
-  // `_accumulated` holds time already banked from previous inside-segments;
-  // `_segmentStart` marks the start of the current (running) inside-segment,
-  // or is null while the timer is paused (outside the geofence).
+  // On-screen working-time display that pauses when the user leaves the
+  // geofence. `_segmentStart` marks the start of the current (running) inside
+  // segment, or is null while paused (outside). `_accumulated` holds the value
+  // shown while paused. A fresh check-in starts at 00:00:00 and counts the
+  // worked-time up (see `_beginTiming`).
   Duration _accumulated = Duration.zero;
   DateTime? _segmentStart;
   bool _insideGeofence = true;
+
+  // After the user leaves and RE-ENTERS the geofence, the timer switches to
+  // showing the wall-clock time-of-day instead of an elapsed count: back
+  // inside at 11:00 → the timer reads 11:00:00 and ticks live (see
+  // `_onGeofenceChange`). It does NOT resume the banked worked-time and does
+  // NOT reset to 00:00. While outside, the value freezes at `_pausedWallClock`.
+  bool _wallClockMode = false;
+  DateTime? _pausedWallClock;
 
   bool get _isCheckedIn => _checkInAt != null || _externalCheckedIn;
 
   /// True while checked in but currently outside the geofence (timer paused).
   bool get _isPausedOutside => _isCheckedIn && !_insideGeofence;
 
-  /// Total worked time so far — running segment counts only while inside.
+  /// Value shown on the on-screen timer. Before any geofence exit it is the
+  /// worked-time (running segment counts only while inside). After a re-entry
+  /// it becomes the wall-clock time-of-day (live while inside, frozen at the
+  /// exit moment while outside).
   Duration _currentElapsed() {
+    if (_wallClockMode) {
+      final ref = _insideGeofence
+          ? DateTime.now()
+          : (_pausedWallClock ?? DateTime.now());
+      return Duration(
+        hours: ref.hour,
+        minutes: ref.minute,
+        seconds: ref.second,
+      );
+    }
     var total = _accumulated;
     if (_insideGeofence && _segmentStart != null) {
       total += DateTime.now().difference(_segmentStart!);
@@ -111,6 +135,10 @@ class _DashboardTabState extends State<_DashboardTab> {
   /// Begins the worked-time accounting from [from], respecting the current
   /// inside/outside state.
   void _beginTiming(DateTime from) {
+    // A fresh check-in always starts the worked-time count at 00:00:00; the
+    // wall-clock display only kicks in after a later re-entry.
+    _wallClockMode = false;
+    _pausedWallClock = null;
     _insideGeofence = GpsTrackingService.instance.insideGeofence.value;
     if (_insideGeofence) {
       _accumulated = Duration.zero;
@@ -129,6 +157,8 @@ class _DashboardTabState extends State<_DashboardTab> {
     _ticker = null;
     _accumulated = Duration.zero;
     _segmentStart = null;
+    _wallClockMode = false;
+    _pausedWallClock = null;
     _elapsed = Duration.zero;
   }
 
@@ -139,16 +169,28 @@ class _DashboardTabState extends State<_DashboardTab> {
     if (!mounted) return;
     setState(() {
       if (!inside) {
-        // Leaving the area → bank the running segment and pause.
-        if (_segmentStart != null) {
+        // Leaving the area → pause and freeze the displayed value. In
+        // wall-clock mode we freeze the time-of-day at the exit moment
+        // (e.g. left at 10:00 → timer stays at 10:00:00); otherwise we bank
+        // the running worked-time segment.
+        if (_wallClockMode) {
+          _pausedWallClock = DateTime.now();
+        } else if (_segmentStart != null) {
           _accumulated += DateTime.now().difference(_segmentStart!);
           _segmentStart = null;
         }
         _insideGeofence = false;
       } else {
-        // Re-entering → resume a fresh running segment.
+        // Re-entering → show the wall-clock re-entry time and run from there.
+        // Per requirement, the timer must show the clock time of the moment
+        // the user comes back (e.g. back inside at 11:00 → timer reads
+        // 11:00:00 and ticks up), NOT resume the paused value and NOT reset
+        // to 00:00. Earlier banked worked-time is intentionally discarded.
         _insideGeofence = true;
-        if (_isCheckedIn) _segmentStart = DateTime.now();
+        if (_isCheckedIn) {
+          _wallClockMode = true;
+          _pausedWallClock = null;
+        }
       }
       _elapsed = _currentElapsed();
     });
@@ -436,6 +478,32 @@ class _DashboardTabState extends State<_DashboardTab> {
     }
   }
 
+  /// Punch was rejected because a fresh privacy consent is required. Open the
+  /// consent screen so the user can accept and then retry the punch.
+  Future<void> _handleConsentRequired() async {
+    final username = await AuthService().getUsername();
+    final token = await AuthService().getToken();
+    if (!mounted || token == null || token.isEmpty) return;
+    final accepted = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ConsentScreen(
+          token: token,
+          needsSetup: false,
+          username: username,
+          returnOnAccept: true,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (accepted == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Consent accepted. Please tap to check out again.'),
+        ),
+      );
+    }
+  }
+
   Future<void> _showPunchError(String msg) async {
     await showDialog<void>(
       context: context,
@@ -616,7 +684,11 @@ class _DashboardTabState extends State<_DashboardTab> {
       if (!mounted) return;
       if (!result.isSuccess) {
         setState(() => _isPunching = false);
-        await _showPunchError(result.error ?? 'Check-out failed');
+        if (result.requiresConsent) {
+          await _handleConsentRequired();
+        } else {
+          await _showPunchError(result.error ?? 'Check-out failed');
+        }
         return;
       }
       success = true;
@@ -700,6 +772,24 @@ class _DashboardTabState extends State<_DashboardTab> {
               ),
             ),
           ),
+          if (_isCheckedIn) ...[
+            const SizedBox(height: 10),
+            Center(
+              child: ValueListenableBuilder<String>(
+                valueListenable: GpsTrackingService.instance.debugStatus,
+                builder: (_, status, child) => status.isEmpty
+                    ? const SizedBox.shrink()
+                    : Text(
+                        'GPS: $status',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: AppColors.subtitleGrey,
+                        ),
+                      ),
+              ),
+            ),
+          ],
           const SizedBox(height: 32),
           const Text(
             "Today's Summary",

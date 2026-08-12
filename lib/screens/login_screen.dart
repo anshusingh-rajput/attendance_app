@@ -25,14 +25,30 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   void initState() {
     super.initState();
+    // Strip country-code artifacts (+1, +91, spaces) from ANY value that
+    // lands in the field — including values injected by Android autofill or
+    // the Google number-hint chip, which bypass _setNumber().
+    _usernameController.addListener(_normalizeFieldText);
     WidgetsBinding.instance.addPostFrameCallback((_) => _preloadSims());
   }
 
   @override
   void dispose() {
+    _usernameController.removeListener(_normalizeFieldText);
     _usernameController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  void _normalizeFieldText() {
+    final current = _usernameController.text;
+    final normalized = _normalizeNumber(current);
+    if (normalized != current) {
+      _usernameController.value = TextEditingValue(
+        text: normalized,
+        selection: TextSelection.collapsed(offset: normalized.length),
+      );
+    }
   }
 
   Future<void> _preloadSims() async {
@@ -119,12 +135,26 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  /// Normalizes any picked/autofilled value to `91` + 10-digit mobile
+  /// (no `+`, no spaces). Handles messy variants seen across devices:
+  ///   "+917000175344"  (real phone, E.164)     -> "917000175344"
+  ///   "917000175344"   (raw hint)              -> "917000175344"
+  ///   "+1917000175344" (emulator US-locale +1) -> "917000175344"
+  ///   "07000175344" / "7000175344" (national)  -> "917000175344"
+  static String _normalizeNumber(String raw) {
+    // Keep digits only — drops +, spaces, and any country-code artifacts.
+    final digits = raw.replaceAll(RegExp(r'\D'), '');
+    if (digits.isEmpty) return '';
+    // The real mobile number is always the last 10 digits; prefix 91.
+    if (digits.length >= 10) {
+      return '91${digits.substring(digits.length - 10)}';
+    }
+    // Too short to be a full number — return as-is so the validator can flag it.
+    return digits;
+  }
+
   void _setNumber(String raw) {
-    var num = raw.replaceAll(RegExp(r'\s'), '').trim();
-    // Strip +91 / 91 prefix if present
-    if (num.startsWith('+91')) num = num.substring(3);
-    if (num.startsWith('91') && num.length > 10) num = num.substring(2);
-    if (num.startsWith('0') && num.length == 11) num = num.substring(1);
+    final num = _normalizeNumber(raw);
     setState(() {
       _usernameController.text = num;
     });
@@ -251,7 +281,7 @@ class _LoginScreenState extends State<LoginScreen> {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => LoaderScreen(
-          username: _usernameController.text.trim(),
+          username: _normalizeNumber(_usernameController.text),
           password: _passwordController.text,
         ),
       ),
@@ -284,7 +314,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Sign in to your HIMMAT account',
+                  'Sign in to your MEDHA account',
                   style: TextStyle(
                     fontSize: 16,
                     color: AppColors.subtitleGrey,
@@ -409,7 +439,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 24),
                 const Center(
                   child: Text(
-                    'HIMMAT v1.0',
+                    'MEDHA v1.0',
                     style: TextStyle(
                       fontSize: 13,
                       color: AppColors.versionGrey,

@@ -7,6 +7,7 @@ import '../services/auth_service.dart';
 import '../services/face_match_service.dart';
 import '../services/mobile_service.dart';
 import '../theme/app_theme.dart';
+import 'consent_screen.dart';
 
 class CheckInCameraScreen extends StatefulWidget {
   final PunchDirection direction;
@@ -146,19 +147,29 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
         );
         if (!mounted) return;
 
-        if (!matchResult.isSuccess) {
-          _showError(matchResult.error ?? 'Face verification failed');
-          return;
-        }
-
-        const double clientThreshold = 0.50;
+        // A poor / blurry / dark camera often makes face verification fail
+        // outright or return a low score. Instead of hard-blocking the punch,
+        // let the user continue — the real match status/score is still sent to
+        // the backend so admin can review. Threshold kept low (0.35) so a
+        // genuine but low-quality selfie passes silently.
+        const double clientThreshold = 0.35;
         final sim = matchResult.similarity ?? 0;
-        if (sim < clientThreshold) {
-          await _showFaceMismatchDialog(sim);
-          return;
+        if (!matchResult.isSuccess || sim < clientThreshold) {
+          final proceed = await _showFaceMismatchDialog(
+            sim,
+            failed: !matchResult.isSuccess,
+          );
+          if (!mounted || !proceed) return;
+          setState(() {
+            _busy = true;
+            _statusText = 'Please wait...';
+          });
+          faceMatched = false;
+          faceScore = sim;
+        } else {
+          faceMatched = true;
+          faceScore = sim;
         }
-        faceMatched = true;
-        faceScore = sim;
       }
 
       setState(() => _statusText =
@@ -173,6 +184,10 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
       );
       if (!mounted) return;
       if (!punchResult.isSuccess) {
+        if (punchResult.requiresConsent) {
+          await _handleConsentRequired();
+          return;
+        }
         _showError(punchResult.error ?? 'Punch failed');
         return;
       }
@@ -184,12 +199,18 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
     }
   }
 
-  Future<void> _showFaceMismatchDialog(double similarity) async {
+  /// Shown when the face score is low or verification could not run (often a
+  /// blurry/dark camera). Returns `true` if the user chooses to continue and
+  /// mark attendance anyway, `false` to retry.
+  Future<bool> _showFaceMismatchDialog(
+    double similarity, {
+    bool failed = false,
+  }) async {
     setState(() {
       _busy = false;
       _statusText = '';
     });
-    await showDialog<void>(
+    final result = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
       builder: (ctx) => AlertDialog(
@@ -198,18 +219,24 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
         ),
         icon: const Icon(
           Icons.face_retouching_off,
-          color: Colors.redAccent,
+          color: Colors.orange,
           size: 56,
         ),
-        title: const Text(
-          'Face Not Matched',
+        title: Text(
+          failed ? 'Face Not Clear' : 'Face Not Matched',
           textAlign: TextAlign.center,
-          style: TextStyle(fontWeight: FontWeight.w700),
+          style: const TextStyle(fontWeight: FontWeight.w700),
         ),
         content: Text(
-          'Your face does not match the registered photo '
-          '(${(similarity * 100).toStringAsFixed(0)}% similarity).\n\n'
-          'Please try again with proper lighting or contact admin.',
+          failed
+              ? 'Face could not be verified clearly — this can happen if the '
+                  'camera image is blurry or dark.\n\n'
+                  'You can try again, or continue to mark attendance anyway.'
+              : 'Your face matched only '
+                  '${(similarity * 100).toStringAsFixed(0)}% with the '
+                  'registered photo.\n\n'
+                  'You can try again with better lighting, or continue to '
+                  'mark attendance anyway.',
           textAlign: TextAlign.center,
           style: const TextStyle(
             fontSize: 14,
@@ -220,7 +247,7 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
           SizedBox(
             width: double.infinity,
             child: ElevatedButton(
-              onPressed: () => Navigator.pop(ctx),
+              onPressed: () => Navigator.pop(ctx, true),
               style: ElevatedButton.styleFrom(
                 backgroundColor: AppColors.primaryBlue,
                 foregroundColor: Colors.white,
@@ -230,6 +257,16 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
                 padding: const EdgeInsets.symmetric(vertical: 12),
               ),
               child: const Text(
+                'Continue Anyway',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+          SizedBox(
+            width: double.infinity,
+            child: TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text(
                 'Try Again',
                 style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
               ),
@@ -238,6 +275,39 @@ class _CheckInCameraScreenState extends State<CheckInCameraScreen> {
         ],
       ),
     );
+    return result ?? false;
+  }
+
+  /// The backend rejected the punch because a fresh privacy consent is needed.
+  /// Open the consent screen; once accepted, let the user tap Capture again.
+  Future<void> _handleConsentRequired() async {
+    setState(() {
+      _busy = false;
+      _statusText = '';
+    });
+    if (!mounted) return;
+    final username = await AuthService().getUsername();
+    final token = await AuthService().getToken();
+    if (!mounted || token == null || token.isEmpty) return;
+
+    final accepted = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ConsentScreen(
+          token: token,
+          needsSetup: false,
+          username: username,
+          returnOnAccept: true,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (accepted == true) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Consent accepted. Tap "Capture Selfie" again to continue.'),
+        ),
+      );
+    }
   }
 
   Future<void> _showError(String msg) async {

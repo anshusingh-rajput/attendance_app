@@ -50,14 +50,45 @@ class ConsentService {
 
   static const String _baseUrl = 'https://bhsmart.satoop.com';
   static const String _keyPrefix = 'consent_accepted_';
+  static const String _versionPrefix = 'consent_version_';
   static const String _deviceIdKey = 'device_id';
 
   String _key(String? username) => '$_keyPrefix${username ?? 'unknown'}';
+  String _versionKey(String? username) =>
+      '$_versionPrefix${username ?? 'unknown'}';
 
-  /// Whether this user has already accepted the consent on this device.
+  /// Whether the backend's punch reject message means a fresh consent is
+  /// required (e.g. "Consent required. Accept the latest privacy consent…").
+  static bool isConsentError(String? message) =>
+      message != null && message.toLowerCase().contains('consent');
+
+  /// Whether this user has already accepted *some* consent on this device.
   Future<bool> hasConsented(String? username) async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_key(username)) ?? false;
+  }
+
+  /// Whether the consent screen must be shown before entering the app.
+  ///
+  /// Returns true when the user has never accepted on this device, OR when the
+  /// backend now publishes a newer consent version than the one this user
+  /// accepted. Tracking only a boolean (the old behaviour) meant a bumped
+  /// policy version was never re-prompted — so the backend kept rejecting
+  /// punches with "Consent required" while the app silently skipped the form.
+  /// On network failure we do not re-prompt an already-consented user.
+  Future<bool> needsConsent(String? username) async {
+    final prefs = await SharedPreferences.getInstance();
+    final accepted = prefs.getBool(_key(username)) ?? false;
+    if (!accepted) return true;
+
+    final acceptedVersion = prefs.getString(_versionKey(username));
+    final doc = await fetchDocument();
+    final current = doc?.version;
+    // Backend gave no version (or we're offline) → don't pester a user who has
+    // already consented on this device.
+    if (current == null || current.isEmpty) return false;
+    // Re-prompt only when the published version differs from what we stored.
+    return current != acceptedVersion;
   }
 
   /// Fetches the current consent policy document from the backend. Returns
@@ -90,10 +121,6 @@ class ConsentService {
     required String? username,
     String? version,
   }) async {
-    // Persist locally first so the form is never shown again on this device.
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_key(username), true);
-
     try {
       final token = await AuthService().getToken();
       if (token == null || token.isEmpty) return false;
@@ -113,9 +140,21 @@ class ConsentService {
             }),
           )
           .timeout(const Duration(seconds: 20));
-      return resp.statusCode >= 200 && resp.statusCode < 300;
+
+      final ok = resp.statusCode >= 200 && resp.statusCode < 300;
+      if (ok) {
+        // Persist ONLY after the backend confirms, and remember which version
+        // was accepted. Setting the flag before confirmation (the old
+        // behaviour) created a desync — the app thought consent was done while
+        // the backend kept rejecting punches with "Consent required".
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool(_key(username), true);
+        await prefs.setString(_versionKey(username), version ?? '');
+      }
+      return ok;
     } catch (_) {
-      // Network failure must not block the user — local flag already set.
+      // Network failure: do NOT mark consented, so the user is re-prompted and
+      // can retry once back online instead of getting silently blocked.
       return false;
     }
   }

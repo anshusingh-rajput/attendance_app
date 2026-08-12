@@ -45,9 +45,10 @@ class _LoaderScreenState extends State<LoaderScreen> {
 
       // First sign-in → show the one-time consent form before entering.
       final username = await _auth.getUsername();
-      final consented = await ConsentService.instance.hasConsented(username);
+      final mustConsent =
+          await ConsentService.instance.needsConsent(username);
       if (!mounted) return;
-      if (!consented) {
+      if (mustConsent) {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
             builder: (_) => ConsentScreen(
@@ -87,7 +88,7 @@ class _LoaderScreenState extends State<LoaderScreen> {
               const AppLogo(size: 96, iconSize: 48, radius: 22),
               const SizedBox(height: 28),
               const Text(
-                'HIMMAT',
+                'MEDHA',
                 style: TextStyle(
                   fontSize: 32,
                   fontWeight: FontWeight.w700,

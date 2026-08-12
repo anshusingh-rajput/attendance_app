@@ -42,9 +42,10 @@ class _AuthGateState extends State<AuthGate> {
       final needsSetup = photoUrl == null || photoUrl.isEmpty;
 
       final username = await _auth.getUsername();
-      final consented = await ConsentService.instance.hasConsented(username);
+      final mustConsent =
+          await ConsentService.instance.needsConsent(username);
       if (!mounted) return;
-      if (!consented) {
+      if (mustConsent) {
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
             builder: (_) => ConsentScreen(
@@ -89,7 +90,7 @@ class _AuthGateState extends State<AuthGate> {
               AppLogo(size: 96, iconSize: 48, radius: 22),
               SizedBox(height: 28),
               Text(
-                'HIMMAT',
+                'MEDHA',
                 style: TextStyle(
                   fontSize: 32,
                   fontWeight: FontWeight.w700,
